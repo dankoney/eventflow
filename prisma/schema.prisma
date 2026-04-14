@@ -1,0 +1,149 @@
+// Prisma does not ship a native Windows-on-ARM query engine yet. If you see
+// "query_engine-windows.dll.node is not a valid Win32 application" with Node arm64,
+// use Node.js x64 on Windows ARM (emulated) or run the app in WSL2 / Linux and reinstall deps.
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  logo      String?
+  createdAt DateTime @default(now())
+  events    Event[]
+  users     User[]
+}
+
+model User {
+  id            String       @id @default(cuid())
+  name          String?
+  email         String       @unique
+  emailVerified DateTime?
+  image         String?
+  role          Role         @default(SALES_REP)
+  orgId         String
+  org           Organization @relation(fields: [orgId], references: [id])
+  accounts      Account[]
+  sessions      Session[]
+  createdAt     DateTime     @default(now())
+}
+
+model Event {
+  id              String      @id @default(cuid())
+  name            String
+  description     String?
+  date            DateTime
+  endDate         DateTime?
+  location        String
+  capacity        Int
+  virtualCapacity Int         @default(0)
+  type            EventType   @default(IN_PERSON)
+  status          EventStatus @default(DRAFT)
+  zoomMeetingId   String?
+  zoomJoinUrl     String?
+  zoomPasscode    String?
+  orgId           String
+  org             Organization @relation(fields: [orgId], references: [id])
+  guests          Guest[]
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+}
+
+model Guest {
+  id        String      @id @default(cuid())
+  name      String
+  email     String
+  phone     String?
+  company   String?
+  jobTitle  String?
+  tier      Tier        @default(C)
+  mode      AttendMode  @default(IN_PERSON)
+  status    GuestStatus @default(INVITED)
+  qrCode    String?     @unique
+  zoomLink  String?
+  dietary   String?
+  repId     String?
+  eventId   String
+  event     Event       @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  checkIn   CheckIn?
+  createdAt DateTime    @default(now())
+}
+
+model CheckIn {
+  id          String   @id @default(cuid())
+  guestId     String   @unique
+  guest       Guest    @relation(fields: [guestId], references: [id])
+  method      String   @default("manual")
+  checkedInAt DateTime @default(now())
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+enum Role {
+  ADMIN
+  MARKETING
+  SALES_REP
+}
+
+enum Tier {
+  A
+  B
+  C
+}
+
+enum AttendMode {
+  IN_PERSON
+  VIRTUAL
+}
+
+enum EventType {
+  IN_PERSON
+  VIRTUAL
+  HYBRID
+}
+
+enum EventStatus {
+  DRAFT
+  PUBLISHED
+  LIVE
+  COMPLETED
+  CANCELLED
+}
+
+enum GuestStatus {
+  INVITED
+  REGISTERED
+  CHECKED_IN
+  JOINED
+  NO_SHOW
+}
