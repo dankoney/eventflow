@@ -81,8 +81,16 @@ High-level checklist — adapt to your host’s Node/Git UI:
    npm run build
    ```
 
-5. **Run**  
-   Use Plesk’s **Node.js** application support or a process manager (PM2, systemd) to run:
+5. **Run**
+
+   **Option A — Plesk “single startup file” (recommended)**  
+   Some Plesk Node.js versions cannot pass `start` to `node_modules/next/dist/bin/next`, so use the included **`server.js`** at the project root:
+
+   - In Plesk → Node.js → **Application startup file**: `server.js` (not the long path under `node_modules`).
+   - Plesk usually sets `PORT`; the server listens on **`0.0.0.0`** so the reverse proxy can reach it.
+   - After `npm run build`, click **Restart App** in Plesk.
+
+   **Option B — CLI** (VPS without that limitation, or PM2):
 
    ```bash
    npm run start
@@ -104,7 +112,7 @@ High-level checklist — adapt to your host’s Node/Git UI:
 |--------|---------|
 | Dev server | `npm run dev` |
 | Production build | `npm run build` |
-| Production server | `npm start` |
+| Production server | `npm start` (Next default) or `npm run start:plesk` (same as `server.js` for Plesk) |
 | Prisma Client | `npm run prisma:generate` |
 | Migrations (dev) | `npm run prisma:migrate` |
 
