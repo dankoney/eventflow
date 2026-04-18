@@ -1,0 +1,223 @@
+// Prisma does not ship a native Windows-on-ARM query engine yet. If you see
+// "query_engine-windows.dll.node is not a valid Win32 application" with Node arm64,
+// use Node.js x64 on Windows ARM (emulated) or run the app in WSL2 / Linux and reinstall deps.
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Organization {
+  id                  String     @id @default(cuid())
+  name                String
+  slug                String     @unique
+  logo                String?
+  zoomClientId        String?
+  zoomClientSecret    String?
+  zoomAccountId       String?
+  whatsappEnabled     Boolean    @default(false)
+  whatsappAccessToken String?    @db.Text
+  whatsappPhoneNumberId String?
+  resendApiKey        String?    @db.Text
+  /** mNotify (Ghana) — Quick SMS; https://api.mnotify.com */
+  mnotifyEnabled      Boolean    @default(false)
+  mnotifyApiKey       String?    @db.Text
+  /** Registered sender ID (max 11 characters on mNotify). */
+  mnotifySenderId     String?
+  createdAt           DateTime   @default(now())
+  events              Event[]
+  users               User[]
+  locations           Location[]
+}
+
+model Location {
+  id        String   @id @default(cuid())
+  name      String
+  address   String
+  capacity  Int
+  orgId     String
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  events    Event[]
+  createdAt DateTime @default(now())
+}
+
+model User {
+  id            String       @id @default(cuid())
+  name          String?
+  email         String       @unique
+  emailVerified DateTime?
+  image         String?
+  role          Role         @default(STAFF)
+  orgId         String
+  org           Organization @relation(fields: [orgId], references: [id])
+  accounts      Account[]
+  sessions      Session[]
+  createdAt     DateTime     @default(now())
+}
+
+model Event {
+  id                        String      @id @default(cuid())
+  name                      String
+  description               String?
+  date                      DateTime
+  endDate                   DateTime
+  locationId                String
+  location                  Location    @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  capacity                  Int
+  virtualCapacity           Int         @default(0)
+  type                      EventType   @default(IN_PERSON)
+  status                    EventStatus @default(DRAFT)
+  zoomMeetingId             String?
+  zoomJoinUrl               String?
+  zoomPasscode              String?
+  zoomSessionKind           ZoomSessionKind @default(WEBINAR)
+  reminderPrimaryEnabled    Boolean     @default(true)
+  reminderPrimaryHoursBefore Int        @default(24)
+  reminderPrimaryEmail      Boolean     @default(true)
+  reminderPrimaryWhatsapp   Boolean     @default(false)
+  reminderPrimarySms        Boolean     @default(false)
+  reminderFinalEnabled      Boolean     @default(true)
+  reminderFinalHoursBefore Int         @default(2)
+  reminderFinalWhatsapp     Boolean     @default(true)
+  reminderFinalSms          Boolean     @default(false)
+  orgId                     String
+  org                       Organization @relation(fields: [orgId], references: [id])
+  guests                    Guest[]
+  reminderLogs              EventReminderLog[]
+  createdAt                 DateTime    @default(now())
+  updatedAt                 DateTime    @updatedAt
+}
+
+model EventReminderLog {
+  id        String   @id @default(cuid())
+  eventId   String
+  event     Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  kind      String
+  anchorAt  DateTime
+  sentAt    DateTime @default(now())
+
+  @@unique([eventId, kind, anchorAt])
+}
+
+model Guest {
+  id        String      @id @default(cuid())
+  name      String
+  email     String
+  phone     String?
+  company   String?
+  jobTitle  String?
+  tier      Tier        @default(C)
+  mode      AttendMode  @default(IN_PERSON)
+  status    GuestStatus @default(INVITED)
+  /** REGISTERED = normal RSVP; EXTERNAL_JOIN = created from Zoom participant report (walk-in). */
+  joinSource GuestJoinSource @default(REGISTERED)
+  /** Zoom report `participants[].id` — used to dedupe walk-ins without email on re-sync. */
+  zoomParticipantReportId String?
+  qrCode    String?     @unique
+  zoomLink  String?
+  dietary   String?
+  repId     String?
+  eventId   String
+  event     Event       @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  checkIn   CheckIn?
+  createdAt DateTime    @default(now())
+
+  @@index([eventId, email])
+  @@index([eventId, zoomParticipantReportId])
+}
+
+model CheckIn {
+  id          String   @id @default(cuid())
+  guestId     String   @unique
+  guest       Guest    @relation(fields: [guestId], references: [id])
+  method      String   @default("manual")
+  checkedInAt DateTime @default(now())
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+/// Email OTP for sign-in (and compatible with Auth.js adapter shape).
+model VerificationToken {
+  identifier String
+  token      String
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+enum Role {
+  ADMIN
+  MARKETING
+  STAFF
+  SALES_REF
+}
+
+enum Tier {
+  A
+  B
+  C
+}
+
+enum AttendMode {
+  IN_PERSON
+  VIRTUAL
+}
+
+enum EventType {
+  IN_PERSON
+  VIRTUAL
+  HYBRID
+}
+
+enum EventStatus {
+  DRAFT
+  PUBLISHED
+  LIVE
+  COMPLETED
+  CANCELLED
+}
+
+enum ZoomSessionKind {
+  WEBINAR
+  MEETING
+}
+
+enum GuestJoinSource {
+  REGISTERED
+  EXTERNAL_JOIN
+}
+
+enum GuestStatus {
+  INVITED
+  REGISTERED
+  CHECKED_IN
+  JOINED
+  NO_SHOW
+}
