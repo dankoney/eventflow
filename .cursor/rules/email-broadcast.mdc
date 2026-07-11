@@ -1,0 +1,60 @@
+---
+description: "Email broadcast/marketing module — contacts, templates, campaigns, Resend broadcasts, unsubscribe sync"
+globs: ["src/app/**/broadcasts/**", "src/app/**/campaigns/**", "src/lib/email/**", "src/lib/db/email*.ts", "src/app/api/webhooks/resend/**", "prisma/schema.prisma"]
+alwaysApply: false
+---
+
+# Email Broadcast Module Rules
+
+This module adds marketing/broadcast email to EventFlow, kept architecturally
+separate from transactional email (different code path, different compliance
+rules, must never share a sending queue or fail together with transactional
+sends).
+
+## Non-negotiable architecture decisions
+1. Our Postgres/Prisma DB is the source of truth for CONTACTS. Resend is the
+   source of truth for per-email delivery/engagement events and the live
+   unsubscribe action, but unsubscribe status is mirrored back into our DB via
+   webhook so segment queries never depend on a live call to Resend.
+2. Every contact gets an `isSubscribed` boolean (default true only when
+   marketing consent was actually recorded — never default silently), plus
+   `unsubscribedAt` and `unsubscribeSource`.
+3. Before ANY broadcast send, filter the resolved segment locally by
+   `isSubscribed = true` in Prisma. Never trust Resend alone to suppress
+   recipients.
+4. Every broadcast email must include Resend's `{{{RESEND_UNSUBSCRIBE_URL}}}`
+   merge tag, enforced at template-render time — not left to user discretion.
+   Refuse to send (return `{ success: false, error }`) if it's missing from
+   compiled HTML.
+5. Template editor: use Maily (`@maily-to/core`, `@maily-to/render`), the free
+   MIT-licensed React/Tiptap email editor. Do not integrate Unlayer or any
+   paid SDK without being asked.
+6. Sending goes through Resend's Broadcast API (`resend.broadcasts.create`
+   with `segmentId`), not raw `batch.send` loops, once a segment exceeds a
+   small threshold.
+7. All mutations (campaign create/update/send, template save, contact
+   consent changes) are server actions per the general EventFlow rules —
+   return `{ success, data?, error? }`. The one exception is the Resend
+   webhook receiver, which must be a route handler
+   (`src/app/api/webhooks/resend/route.ts`) since it's called by Resend, not
+   by our own client.
+8. Respect existing roles: MARKETING can create/send campaigns and view all
+   guest data; SALES_REP should not get campaign-send access unless
+   explicitly asked to extend that; ADMIN has full access.
+
+## Data model additions (Prisma)
+Add `EmailContact`, `EmailTemplate`, `EmailCampaign`,
+`EmailCampaignRecipient`, `EmailEvent` models, following the naming/casing
+conventions already used in schema.prisma. `EmailContact.guestId` is a
+required relation to the existing `Guest` model — do not duplicate guest data
+into this table beyond what's needed for send/consent state.
+
+## Webhook safety
+The Resend webhook route must verify signatures before processing, log every
+raw event to `EmailEvent` first, then dispatch updates. Never trust an
+unverified payload to flip `isSubscribed`.
+
+## When in doubt
+If a decision here conflicts with something faster/simpler, ask before
+deviating — these constraints exist for compliance and data-integrity
+reasons, not style preference.

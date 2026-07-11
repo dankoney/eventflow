@@ -5,12 +5,13 @@ import { LoginForm } from "@/components/auth/LoginForm";
 import { getUserCountSafe } from "@/lib/prisma-connectivity";
 
 type LoginPageProps = {
-  searchParams: { callbackUrl?: string; setup?: string; error?: string };
+  searchParams: { callbackUrl?: string; setup?: string; error?: string; activated?: string };
 };
 
 export default async function LoginPage({ searchParams }: LoginPageProps) {
   const users = await getUserCountSafe();
   const setupComplete = searchParams.setup === "complete";
+  const activatedSlug = searchParams.activated?.trim() || null;
   const prismaBroken = !users.ok;
 
   return (
@@ -33,6 +34,15 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
           role="status"
         >
           Organization created. Sign in with the admin email; we will email you a one-time code.
+        </div>
+      ) : null}
+
+      {activatedSlug ? (
+        <div
+          className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900"
+          role="status"
+        >
+          Workspace <strong>{activatedSlug}</strong> is now active. Enter the admin email below — we&apos;ll send a one-time code.
         </div>
       ) : null}
 

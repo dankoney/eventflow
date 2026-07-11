@@ -1,0 +1,6 @@
+-- AlterTable
+ALTER TABLE "Subscription" ADD COLUMN IF NOT EXISTS "emailToken" TEXT;
+ALTER TABLE "Subscription" ADD COLUMN IF NOT EXISTS "cardLast4" TEXT;
+ALTER TABLE "Subscription" ADD COLUMN IF NOT EXISTS "cardExpMonth" INTEGER;
+ALTER TABLE "Subscription" ADD COLUMN IF NOT EXISTS "cardExpYear" INTEGER;
+ALTER TABLE "Subscription" ADD COLUMN IF NOT EXISTS "cardExpiringNotifiedAt" TIMESTAMP(3);

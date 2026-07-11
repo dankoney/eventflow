@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 
 import { auth } from "@/auth";
+import { assertCanAddTeamSeat } from "@/lib/billing/planLimits";
 import { formatResendErrorForClient, sendWorkspaceInviteEmail } from "@/lib/email";
 import { prisma } from "@/lib/prisma";
 import type { ActionResult } from "@/types";
@@ -51,9 +52,12 @@ export async function createOrgUser(
   try {
     const org = await prisma.organization.findUnique({
       where: { id: session.user.orgId },
-      select: { name: true, resendApiKey: true }
+      select: { name: true, resendApiKey: true, plan: true, id: true }
     });
     if (!org) return { success: false, error: "Organization not found." };
+
+    const seatLimit = await assertCanAddTeamSeat(org);
+    if (!seatLimit.ok) return { success: false, error: seatLimit.error };
 
     const user = await prisma.user.create({
       data: {

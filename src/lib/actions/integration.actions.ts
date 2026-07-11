@@ -3,18 +3,84 @@
 import { Role } from "@prisma/client";
 
 import { auth } from "@/auth";
-import { checkMnotifySenderStatus } from "@/lib/mnotify";
+import { checkMnotifySenderStatus, getMnotifyDefaultSenderIdFromEnv } from "@/lib/mnotify";
 import { prisma } from "@/lib/prisma";
+import { fetchPlaceAutocomplete } from "@/lib/places/googlePlacesServer";
+import { createMeetingSdkJwt, resolveMeetingSdkCredentialsForOrg } from "@/lib/zoom/meetingSdkAuth";
 import { getZoomAccessToken, getZoomWebinarHostUserId } from "@/lib/zoom";
 import type { ActionResult } from "@/types";
 
 export type IntegrationHealth = "healthy" | "action_required";
 
+function canVerifyZoomIntegration(role: Role): boolean {
+  return role === Role.ADMIN || role === Role.MARKETING;
+}
+
+/** Live OAuth check — used in Settings and the event wizard venue step. */
+export async function verifyOrgZoomConnection(): Promise<
+  ActionResult<{ status: IntegrationHealth; detail?: string }>
+> {
+  return testZoomIntegration();
+}
+
+export async function testZoomMeetingSdkIntegration(): Promise<
+  ActionResult<{ status: IntegrationHealth; detail?: string }>
+> {
+  const session = await auth();
+  if (!session?.user?.orgId || !canVerifyZoomIntegration(session.user.role)) {
+    return { success: false, error: "Unauthorized" };
+  }
+
+  const creds = await resolveMeetingSdkCredentialsForOrg(session.user.orgId);
+  if (!creds) {
+    return {
+      success: true,
+      data: {
+        status: "action_required",
+        detail:
+          "No Meeting SDK credentials. Save Client ID and Client Secret in the Meeting SDK section below, or set ZOOM_MEETING_SDK_KEY and ZOOM_MEETING_SDK_SECRET on the server."
+      }
+    };
+  }
+
+  try {
+    const jwt = createMeetingSdkJwt({
+      sdkKey: creds.sdkKey,
+      sdkSecret: creds.sdkSecret,
+      meetingNumber: "1234567890",
+      role: 1
+    });
+    if (!jwt.includes(".")) {
+      throw new Error("JWT generation failed");
+    }
+    const orgRow = await prisma.organization.findUnique({
+      where: { id: session.user.orgId },
+      select: { zoomMeetingSdkKey: true, zoomMeetingSdkSecret: true }
+    });
+    const fromOrg = Boolean(orgRow?.zoomMeetingSdkKey?.trim() && orgRow?.zoomMeetingSdkSecret?.trim());
+    return {
+      success: true,
+      data: {
+        status: "healthy",
+        detail: `Meeting SDK credentials OK (JWT signed for host role). Using ${fromOrg ? "saved organization credentials" : "server environment variables"}. Key: ${creds.sdkKey.slice(0, 8)}…`
+      }
+    };
+  } catch (e) {
+    return {
+      success: true,
+      data: {
+        status: "action_required",
+        detail: e instanceof Error ? e.message : "Could not sign a test Meeting SDK JWT"
+      }
+    };
+  }
+}
+
 export async function testZoomIntegration(): Promise<
   ActionResult<{ status: IntegrationHealth; detail?: string }>
 > {
   const session = await auth();
-  if (!session?.user?.orgId || session.user.role !== Role.ADMIN) {
+  if (!session?.user?.orgId || !canVerifyZoomIntegration(session.user.role)) {
     return { success: false, error: "Unauthorized" };
   }
 
@@ -34,7 +100,21 @@ export async function testZoomIntegration(): Promise<
         }
       };
     }
-    const data = (await res.json()) as { id?: string; email?: string };
+    const raw = await res.text();
+    let data: { id?: string; email?: string } = {};
+    if (raw.trim()) {
+      try {
+        data = JSON.parse(raw) as { id?: string; email?: string };
+      } catch {
+        return {
+          success: true,
+          data: {
+            status: "action_required",
+            detail: "Zoom API returned an invalid response when verifying the host user."
+          }
+        };
+      }
+    }
     const hostLabel = data.email ?? data.id ?? hostId;
     return {
       success: true,
@@ -141,18 +221,26 @@ export async function testMnotifyIntegration(): Promise<
     where: { id: session.user.orgId },
     select: { mnotifyApiKey: true, mnotifySenderId: true }
   });
-  const apiKey = org?.mnotifyApiKey?.trim() || process.env.MNOTIFY_API_KEY?.trim() || "";
-  const sender = org?.mnotifySenderId?.trim() ?? "";
+  if (!org) {
+    return { success: false, error: "Organization not found." };
+  }
+  const apiKey = org.mnotifyApiKey?.trim() || process.env.MNOTIFY_API_KEY?.trim() || "";
   if (!apiKey) {
     return {
       success: true,
       data: { status: "action_required", detail: "Add an mNotify API key (organization or MNOTIFY_API_KEY on server)." }
     };
   }
-  if (!sender) {
+
+  const sender = org.mnotifySenderId?.trim() || getMnotifyDefaultSenderIdFromEnv();
+  if (!sender || sender.length < 3) {
     return {
       success: true,
-      data: { status: "action_required", detail: "Add your registered sender ID (max 11 characters)." }
+      data: {
+        status: "action_required",
+        detail:
+          "Save a sender ID (3–11 characters) in Settings or set MNOTIFY_DEFAULT_SENDER_ID on the server (3–11 alphanumeric characters)."
+      }
     };
   }
 
@@ -218,6 +306,55 @@ export async function testWhatsappIntegration(): Promise<
       data: {
         status: "action_required",
         detail: e instanceof Error ? e.message : "Meta request failed"
+      }
+    };
+  }
+}
+
+export async function testGoogleMapsIntegration(): Promise<
+  ActionResult<{ status: IntegrationHealth; detail?: string }>
+> {
+  const session = await auth();
+  if (!session?.user?.orgId || session.user.role !== Role.ADMIN) {
+    return { success: false, error: "Unauthorized" };
+  }
+
+  const org = await prisma.organization.findUnique({
+    where: { id: session.user.orgId },
+    select: { googleMapsApiKey: true }
+  });
+  const apiKey = org?.googleMapsApiKey?.trim() || process.env.GOOGLE_MAPS_API_KEY?.trim();
+  if (!apiKey) {
+    return {
+      success: true,
+      data: { status: "action_required", detail: "No Google Maps API key (organization or GOOGLE_MAPS_API_KEY)." }
+    };
+  }
+
+  try {
+    const r = await fetchPlaceAutocomplete(apiKey, "London UK");
+    if (!r.ok) {
+      return {
+        success: true,
+        data: {
+          status: "action_required",
+          detail: r.error
+        }
+      };
+    }
+    return {
+      success: true,
+      data: {
+        status: "healthy",
+        detail: `Places Autocomplete OK (${r.predictions.length} sample results). Enable Places API, Geocoding API, and Static Maps API for this project.`
+      }
+    };
+  } catch (e) {
+    return {
+      success: true,
+      data: {
+        status: "action_required",
+        detail: e instanceof Error ? e.message : "Google request failed"
       }
     };
   }

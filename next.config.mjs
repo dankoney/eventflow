@@ -1,8 +1,9 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  transpilePackages: ["@zoom/meetingsdk", "@maily-to/core", "@maily-to/render"],
   experimental: {
     serverActions: {
-      bodySizeLimit: "2mb"
+      bodySizeLimit: "80mb"
     }
   }
 };

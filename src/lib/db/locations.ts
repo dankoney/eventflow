@@ -5,6 +5,11 @@ export type LocationListItem = {
   name: string;
   address: string;
   capacity: number;
+  city: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  facilityImageUrl: string | null;
+  googlePlaceId: string | null;
   orgId: string;
   createdAt: Date;
 };

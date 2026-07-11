@@ -7,7 +7,9 @@ import { useForm } from "react-hook-form";
 import { z } from "zod";
 
 import { Button } from "@/components/ui/Button";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { Input } from "@/components/ui/Input";
+import { WorkspaceNotice } from "@/components/ui/WorkspaceNotice";
 import { createLocation, deleteLocation, updateLocation } from "@/lib/actions/location.actions";
 import type { LocationListItem } from "@/lib/db/locations";
 
@@ -26,6 +28,9 @@ type LocationsPanelProps = {
 export function LocationsPanel({ locations }: LocationsPanelProps) {
   const router = useRouter();
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [deleteLocationId, setDeleteLocationId] = useState<string | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteNotice, setDeleteNotice] = useState<string | null>(null);
 
   const createForm = useForm<FormValues>({
     resolver: zodResolver(formSchema),
@@ -67,11 +72,19 @@ export function LocationsPanel({ locations }: LocationsPanelProps) {
     router.refresh();
   }
 
-  async function onDelete(id: string) {
-    if (!confirm("Delete this venue? Events that still use it cannot be deleted until you reassign them.")) return;
-    const res = await deleteLocation({ id });
+  function requestDeleteLocation(id: string) {
+    setDeleteNotice(null);
+    setDeleteLocationId(id);
+  }
+
+  async function confirmDeleteLocation() {
+    if (!deleteLocationId) return;
+    setDeleteBusy(true);
+    const res = await deleteLocation({ id: deleteLocationId });
+    setDeleteBusy(false);
+    setDeleteLocationId(null);
     if (!res.success) {
-      alert(res.error ?? "Could not delete");
+      setDeleteNotice(res.error ?? "Could not delete this venue.");
       return;
     }
     router.refresh();
@@ -111,6 +124,13 @@ export function LocationsPanel({ locations }: LocationsPanelProps) {
 
       <div>
         <h3 className="text-sm font-semibold text-slate-900">Saved venues</h3>
+        {deleteNotice ? (
+          <div className="mt-2">
+            <WorkspaceNotice variant="error" onDismiss={() => setDeleteNotice(null)}>
+              {deleteNotice}
+            </WorkspaceNotice>
+          </div>
+        ) : null}
         {locations.length === 0 ? (
           <p className="mt-2 text-sm text-slate-600">No venues yet. Add one above.</p>
         ) : (
@@ -154,7 +174,12 @@ export function LocationsPanel({ locations }: LocationsPanelProps) {
                       <Button type="button" variant="secondary" className="text-xs px-3 py-1.5" onClick={() => startEdit(loc)}>
                         Edit
                       </Button>
-                      <Button type="button" variant="danger" className="text-xs px-3 py-1.5" onClick={() => onDelete(loc.id)}>
+                      <Button
+                        type="button"
+                        variant="danger"
+                        className="text-xs px-3 py-1.5"
+                        onClick={() => requestDeleteLocation(loc.id)}
+                      >
                         Delete
                       </Button>
                     </div>
@@ -165,6 +190,18 @@ export function LocationsPanel({ locations }: LocationsPanelProps) {
           </ul>
         )}
       </div>
+
+      <ConfirmDialog
+        open={!!deleteLocationId}
+        title="Delete venue?"
+        message="Delete this venue? Events that still use it cannot be deleted until you reassign them."
+        confirmLabel="Delete venue"
+        cancelLabel="Cancel"
+        variant="danger"
+        busy={deleteBusy}
+        onCancel={() => setDeleteLocationId(null)}
+        onConfirm={() => void confirmDeleteLocation()}
+      />
     </div>
   );
 }

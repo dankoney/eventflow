@@ -3,7 +3,12 @@ import { openDB, type DBSchema, type IDBPDatabase } from "idb";
 export type CachedGuestRow = {
   id: string;
   name: string;
-  email: string;
+  email: string | null;
+  /** Absent on caches written before phone was added to the cache. */
+  phone?: string | null;
+  /** Absent on caches written before onsite profile fields were added. */
+  company?: string | null;
+  jobTitle?: string | null;
   repId: string | null;
   qrCode: string | null;
   status: string;

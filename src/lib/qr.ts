@@ -2,8 +2,8 @@ import crypto from "crypto";
 
 import QRCode from "qrcode";
 
-export function createGuestQrCode(eventId: string, email: string) {
-  return crypto.createHash("sha256").update(`${eventId}:${email}:${Date.now()}`).digest("hex");
+export function createGuestQrCode(eventId: string, identifier: string) {
+  return crypto.createHash("sha256").update(`${eventId}:${identifier}:${Date.now()}`).digest("hex");
 }
 
 export function validateGuestQrCode(value: string) {

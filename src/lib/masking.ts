@@ -1,5 +1,6 @@
 /** Mask email for display (e.g. j***@example.com). */
-export function maskEmail(email: string): string {
+export function maskEmail(email: string | null | undefined): string {
+  if (!email?.trim()) return "—";
   const t = email.trim().toLowerCase();
   const at = t.indexOf("@");
   if (at <= 0) return "***";

@@ -1,8 +1,18 @@
-import { AttendMode, EventStatus, EventType, Role } from "@prisma/client";
+import {
+  AttendMode,
+  EventBlueprintTemplate,
+  EventScheduleMode,
+  EventStatus,
+  EventType,
+  Role,
+  type Prisma
+} from "@prisma/client";
 
 import { prisma } from "@/lib/prisma";
-import { isRepScopedRole } from "@/lib/permissions";
+import { assertEventAccess, visibleEventsWhere } from "@/lib/permissions";
 import { formatLocationLine } from "@/lib/utils";
+
+export { visibleEventsWhere };
 
 export type EventGuestSplit = {
   inPerson: number;
@@ -15,14 +25,21 @@ export type EventListItem = {
   description: string | null;
   date: Date;
   endDate: Date;
+  scheduleMode: EventScheduleMode;
+  multiDayConfig: Prisma.JsonValue | null;
   locationId: string;
   locationSummary: string;
+  /** Event hero; falls back to venue image in UI when absent. */
+  bannerImageUrl: string | null;
+  facilityImageUrl: string | null;
   capacity: number;
   virtualCapacity: number;
   type: EventType;
   status: EventStatus;
+  blueprintTemplate: EventBlueprintTemplate;
   orgId: string;
   guestSplit: EventGuestSplit;
+  createdByName: string | null;
 };
 
 export type EventsListTabId = "ongoing" | "upcoming" | "past";
@@ -70,17 +87,7 @@ export function resolveEventsListTab(
   return "past";
 }
 
-/** Events visible: full org for ADMIN/MARKETING; STAFF/SALES_REF only events where they have assigned guests. */
-export function visibleEventsWhere(orgId: string, userId: string, role: Role) {
-  if (isRepScopedRole(role)) {
-    return {
-      orgId,
-      guests: { some: { repId: userId } }
-    } as const;
-  }
-  return { orgId } as const;
-}
-
+/** Events visible: org-wide for ADMIN/MARKETING; event-linked for SALES_REP/STAFF. */
 export async function listEventsWithGuestSplit(
   orgId: string,
   userId: string,
@@ -92,7 +99,8 @@ export async function listEventsWithGuestSplit(
     where,
     orderBy: { date: "desc" },
     include: {
-      location: { select: { id: true, name: true, address: true } }
+      location: { select: { id: true, name: true, address: true, facilityImageUrl: true } },
+      createdBy: { select: { name: true, email: true } }
     }
   });
 
@@ -125,14 +133,20 @@ export async function listEventsWithGuestSplit(
     description: event.description,
     date: event.date,
     endDate: event.endDate,
+    scheduleMode: event.scheduleMode,
+    multiDayConfig: event.multiDayConfig,
     locationId: event.locationId,
     locationSummary: formatLocationLine(event.location),
+    bannerImageUrl: event.bannerImageUrl ?? null,
+    facilityImageUrl: event.location.facilityImageUrl ?? null,
     capacity: event.capacity,
     virtualCapacity: event.virtualCapacity,
     type: event.type,
     status: event.status,
+    blueprintTemplate: event.blueprintTemplate,
     orgId: event.orgId,
-    guestSplit: splitMap.get(event.id) ?? { inPerson: 0, virtual: 0 }
+    guestSplit: splitMap.get(event.id) ?? { inPerson: 0, virtual: 0 },
+    createdByName: event.createdBy?.name?.trim() || event.createdBy?.email || null
   }));
 }
 
@@ -146,14 +160,24 @@ export async function getEventByIdForOrg(eventId: string, orgId: string) {
 export async function getEventForUser(
   eventId: string,
   orgId: string,
-  _userId: string,
-  _role: Role
+  userId: string,
+  role: Role,
+  sessionId?: string | null
 ) {
+  const access = await assertEventAccess(eventId, orgId, {
+    userId,
+    role,
+    orgId,
+    sessionId
+  });
+  if (!access) return null;
+
   return prisma.event.findFirst({
     where: { id: eventId, orgId },
     include: {
       guests: true,
-      location: true
+      location: true,
+      org: { select: { slug: true } }
     }
   });
 }
@@ -171,12 +195,17 @@ export async function getEventForPublicRegistration(eventId: string) {
   return prisma.event.findFirst({
     where: {
       id: eventId,
-      status: { in: openRegistrationStatuses }
+      status: { in: openRegistrationStatuses },
+      allowPublicRegistration: true
     },
     select: {
       id: true,
+      status: true,
       name: true,
       date: true,
+      endDate: true,
+      scheduleMode: true,
+      multiDayConfig: true,
       type: true,
       capacity: true,
       virtualCapacity: true,
@@ -185,8 +214,52 @@ export async function getEventForPublicRegistration(eventId: string) {
       zoomPasscode: true,
       zoomSessionKind: true,
       orgId: true,
-      location: { select: { name: true, address: true } },
-      org: { select: { name: true, resendApiKey: true } }
+      registrationProfile: true,
+      emailMandatoryForRegistration: true,
+      blueprintTemplate: true,
+      location: {
+        select: {
+          name: true,
+          address: true,
+          city: true,
+          latitude: true,
+          longitude: true,
+          facilityImageUrl: true
+        }
+      },
+      org: {
+        select: {
+          name: true,
+          resendApiKey: true,
+          logo: true,
+          defaultEventBrandLogoUrl: true,
+          marketingEmailEnabled: true,
+          marketingConsentCopy: true,
+          marketingPrivacyPolicyUrl: true
+        }
+      },
+      bannerImageUrl: true,
+      brandLogoUrl: true,
+      attendeeTheme: true,
+      publicPageTemplate: true,
+      brandPrimaryColor: true,
+      /**
+       * Surfaced so the public-registration server action can include polling
+       * info in the confirmation email/SMS and the "you qualify to vote" panel
+       * shown after registration succeeds. We never include `Vote` or
+       * `BallotChoice` here — voter-facing read only.
+       */
+      poll: {
+        select: {
+          id: true,
+          title: true,
+          instructions: true,
+          isActive: true,
+          isAnonymous: true,
+          startTime: true,
+          endTime: true
+        }
+      }
     }
   });
 }
@@ -197,7 +270,11 @@ export async function getEventForPublicPage(eventId: string) {
     select: {
       id: true,
       name: true,
+      description: true,
       date: true,
+      endDate: true,
+      scheduleMode: true,
+      multiDayConfig: true,
       status: true,
       type: true,
       capacity: true,
@@ -207,12 +284,56 @@ export async function getEventForPublicPage(eventId: string) {
       zoomPasscode: true,
       zoomSessionKind: true,
       orgId: true,
-      location: { select: { name: true, address: true } },
-      org: { select: { name: true, resendApiKey: true } }
+      allowPublicRegistration: true,
+      emailMandatoryForRegistration: true,
+      blueprintTemplate: true,
+      registrationProfile: true,
+      internalStaffAudience: true,
+      internalStaffNoticeKind: true,
+      internalStaffNoticeFrom: true,
+      internalStaffNoticeCc: true,
+      internalStaffNoticeContext: true,
+      internalStaffCheckInMode: true,
+      internalStaffMealMenuEnabled: true,
+      internalStaffMealMenuScope: true,
+      internalStaffMealMenuItems: true,
+      internalStaffMealMenusByBranch: true,
+      publicExperience: true,
+      location: {
+        select: {
+          name: true,
+          address: true,
+          city: true,
+          latitude: true,
+          longitude: true,
+          facilityImageUrl: true
+        }
+      },
+      org: {
+        select: {
+          name: true,
+          resendApiKey: true,
+          logo: true,
+          logoUrl: true,
+          defaultEventBrandLogoUrl: true,
+          defaultEventBrandPrimaryColor: true,
+          defaultEventBrandSecondaryColor: true,
+          defaultEventBrandTertiaryColor: true,
+          slug: true,
+          internalStaffFooterContact: true,
+          marketingEmailEnabled: true,
+          marketingConsentCopy: true,
+          marketingPrivacyPolicyUrl: true
+        }
+      },
+      bannerImageUrl: true,
+      brandLogoUrl: true,
+      attendeeTheme: true,
+      publicPageTemplate: true,
+      brandPrimaryColor: true
     }
   });
 }
 
-export type PublicRegistrationEvent = NonNullable<
-  Awaited<ReturnType<typeof getEventForPublicRegistration>>
->;
+/** Public registration UI reads the event via `getEventForPublicPage` (all statuses); keep fields aligned with registration actions. */
+export type PublicRegistrationEvent = NonNullable<Awaited<ReturnType<typeof getEventForPublicPage>>>;

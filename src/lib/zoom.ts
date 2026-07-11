@@ -18,6 +18,47 @@ export type ZoomCredentialSet = {
   accountId: string;
 };
 
+/** Stored on Event after Zoom provision — `zoomStartUrl` is admin-only. */
+export type ZoomSessionCredentials = {
+  zoomMeetingId: string;
+  zoomJoinUrl: string;
+  zoomStartUrl: string | null;
+  zoomPasscode: string | null;
+};
+
+type ZoomCreateResponse = {
+  id?: number;
+  join_url?: string;
+  start_url?: string;
+  password?: string;
+};
+
+export type ZoomVirtualSessionParams = {
+  topic: string;
+  startTime: Date;
+  endDate: Date;
+  description?: string | null;
+  /** When set, Zoom uses this passcode; omit for Zoom-generated default. */
+  password?: string | null;
+};
+
+function mapZoomSessionResponse(data: ZoomCreateResponse): ZoomSessionCredentials {
+  if (data.id == null || !data.join_url) {
+    throw new Error("Zoom returned an unexpected session response.");
+  }
+  return {
+    zoomMeetingId: String(data.id),
+    zoomJoinUrl: data.join_url,
+    zoomStartUrl: data.start_url?.trim() || null,
+    zoomPasscode: data.password ?? null
+  };
+}
+
+/** Six-digit passcode when regenerating with Zoom default rules. */
+export function generateZoomDefaultPasscode(): string {
+  return String(Math.floor(100000 + Math.random() * 900000));
+}
+
 /** User ID or email for `POST /users/{userId}/webinars` (Server-to-Server). Defaults to `me`. */
 export function getZoomWebinarHostUserId(): string {
   const raw = process.env.ZOOM_HOST_USER_ID?.trim();
@@ -73,8 +114,25 @@ export async function getZoomAccessToken(orgId?: string | null) {
   return data.access_token;
 }
 
+function parseZoomXmlErrors(body: string): string | null {
+  const fieldMatches = [...body.matchAll(/<field>([^<]*)<\/field>\s*<message>([^<]*)<\/message>/gi)];
+  if (fieldMatches.length === 0) return null;
+  return fieldMatches
+    .map((m) => {
+      const field = m[1]?.trim();
+      const msg = m[2]?.trim();
+      return field ? `${field}: ${msg}` : msg;
+    })
+    .filter(Boolean)
+    .join(" ");
+}
+
 function summarizeZoomErrorResponse(status: number, body: string): string {
   const trimmed = body.trim().slice(0, 800);
+  const xmlDetail = trimmed.startsWith("<?xml") || trimmed.includes("<errors>") ? parseZoomXmlErrors(trimmed) : null;
+  if (xmlDetail) {
+    return `HTTP ${status} — ${xmlDetail}`;
+  }
   try {
     const j = JSON.parse(body) as { code?: number | string; message?: string; reason?: string };
     const parts: string[] = [`HTTP ${status}`];
@@ -86,6 +144,16 @@ function summarizeZoomErrorResponse(status: number, body: string): string {
     /* use trimmed */
   }
   return trimmed ? `HTTP ${status}: ${trimmed}` : `HTTP ${status}`;
+}
+
+async function parseZoomResponseBody<T>(response: Response): Promise<T | null> {
+  const text = await response.text();
+  if (!text.trim()) return null;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new Error(`Zoom API returned non-JSON response (HTTP ${response.status}).`);
+  }
 }
 
 export async function zoomFetch<T>(path: string, orgId: string | null | undefined, init?: RequestInit): Promise<T> {
@@ -104,23 +172,40 @@ export async function zoomFetch<T>(path: string, orgId: string | null | undefine
     throw new Error(`Zoom API ${summarizeZoomErrorResponse(response.status, body)}`);
   }
 
-  return (await response.json()) as T;
+  const parsed = await parseZoomResponseBody<T>(response);
+  if (parsed === null) {
+    throw new Error(`Zoom API returned an empty response for ${path}.`);
+  }
+  return parsed;
+}
+
+/** PATCH/DELETE when Zoom returns 204 or an empty body — then GET for fresh session details. */
+export async function zoomPatchNoContent(
+  path: string,
+  orgId: string,
+  body: Record<string, unknown>
+): Promise<void> {
+  const token = await getZoomAccessToken(orgId);
+  const response = await fetch(`${ZOOM_API_BASE}${path}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`
+    },
+    body: JSON.stringify(body)
+  });
+  if (!response.ok) {
+    const errBody = await response.text();
+    throw new Error(`Zoom API ${summarizeZoomErrorResponse(response.status, errBody)}`);
+  }
+  await response.text();
 }
 
 /** Create a Zoom webinar and return IDs/URLs for the Event record. Uses `ZOOM_HOST_USER_ID` (default `me`). */
 export async function createZoomWebinar(
-  params: {
-    topic: string;
-    startTime: Date;
-    endDate: Date;
-    description?: string | null;
-  },
+  params: ZoomVirtualSessionParams,
   orgId: string
-): Promise<{
-  zoomMeetingId: string;
-  zoomJoinUrl: string;
-  zoomPasscode: string | null;
-}> {
+): Promise<ZoomSessionCredentials> {
   const userId = getZoomWebinarHostUserId();
   const rawMinutes = Math.max(
     15,
@@ -144,6 +229,9 @@ export async function createZoomWebinar(
         duration: durationMinutes,
         agenda: params.description?.slice(0, 2000) ?? "",
         timezone: "UTC",
+        ...(params.password?.trim()
+          ? { password: params.password.trim().slice(0, 10) }
+          : {}),
         settings: {
           /**
            * Auto-approve registrants so Eventflow can add attendees via the registrants API
@@ -160,17 +248,8 @@ export async function createZoomWebinar(
     throw new Error(`Zoom webinar create failed — ${summarizeZoomErrorResponse(response.status, body)}`);
   }
 
-  const data = (await response.json()) as {
-    id: number;
-    join_url: string;
-    password?: string;
-  };
-
-  return {
-    zoomMeetingId: String(data.id),
-    zoomJoinUrl: data.join_url,
-    zoomPasscode: data.password ?? null
-  };
+  const data = (await response.json()) as ZoomCreateResponse;
+  return mapZoomSessionResponse(data);
 }
 
 /** Register an attendee for a webinar; returns personal join URL. */
@@ -204,18 +283,9 @@ function zoomSessionDurationMinutes(startTime: Date, endDate: Date): number {
  * Participant names in Zoom come from each attendee’s Zoom client / profile, not Eventflow.
  */
 export async function createZoomMeeting(
-  params: {
-    topic: string;
-    startTime: Date;
-    endDate: Date;
-    description?: string | null;
-  },
+  params: ZoomVirtualSessionParams,
   orgId: string
-): Promise<{
-  zoomMeetingId: string;
-  zoomJoinUrl: string;
-  zoomPasscode: string | null;
-}> {
+): Promise<ZoomSessionCredentials> {
   const userId = getZoomWebinarHostUserId();
   const durationMinutes = zoomSessionDurationMinutes(params.startTime, params.endDate);
 
@@ -233,6 +303,9 @@ export async function createZoomMeeting(
       duration: durationMinutes,
       agenda: params.description?.slice(0, 2000) ?? "",
       timezone: "UTC",
+      ...(params.password?.trim()
+        ? { password: params.password.trim().slice(0, 10) }
+        : {}),
       settings: {
         /** No Zoom registration page — join URL is a direct link for all attendees. */
         approval_type: 2
@@ -245,21 +318,60 @@ export async function createZoomMeeting(
     throw new Error(`Zoom meeting create failed — ${summarizeZoomErrorResponse(response.status, body)}`);
   }
 
-  const data = (await response.json()) as {
-    id?: number;
-    join_url?: string;
-    password?: string;
-  };
+  const data = (await response.json()) as ZoomCreateResponse;
+  return mapZoomSessionResponse(data);
+}
 
-  if (data.id == null || !data.join_url) {
-    throw new Error("Zoom meeting create returned an unexpected response.");
+async function fetchZoomSessionCredentials(
+  kind: ZoomSessionKind,
+  meetingId: string,
+  orgId: string
+): Promise<ZoomSessionCredentials> {
+  const path =
+    kind === ZoomSessionKind.MEETING
+      ? `/meetings/${encodeURIComponent(meetingId)}`
+      : `/webinars/${encodeURIComponent(meetingId)}`;
+  const data = await zoomFetch<ZoomCreateResponse>(path, orgId);
+  return mapZoomSessionResponse(data);
+}
+
+/**
+ * Updates passcode (custom or freshly generated) and returns current join/start URLs from Zoom.
+ */
+export async function refreshZoomVirtualSessionCredentials(
+  kind: ZoomSessionKind,
+  meetingId: string,
+  orgId: string,
+  options?: { password?: string | null }
+): Promise<ZoomSessionCredentials> {
+  const custom = options?.password?.trim();
+  const password = custom && custom.length > 0 ? custom.slice(0, 10) : generateZoomDefaultPasscode();
+  const path =
+    kind === ZoomSessionKind.MEETING
+      ? `/meetings/${encodeURIComponent(meetingId)}`
+      : `/webinars/${encodeURIComponent(meetingId)}`;
+  await zoomPatchNoContent(path, orgId, { password });
+  return fetchZoomSessionCredentials(kind, meetingId, orgId);
+}
+
+/** ZAK token for Meeting SDK host start (role 1). Requires S2S scope user:read:token or user:read:token:admin. */
+export async function getZoomHostZakToken(orgId: string): Promise<string> {
+  const userId = getZoomWebinarHostUserId();
+  try {
+    const data = await zoomFetch<{ token?: string }>(
+      `/users/${encodeURIComponent(userId)}/token?type=zak`,
+      orgId
+    );
+    if (!data.token?.trim()) {
+      throw new Error("Zoom did not return a host ZAK token.");
+    }
+    return data.token.trim();
+  } catch (e) {
+    const base = e instanceof Error ? e.message : "Could not fetch host ZAK";
+    throw new Error(
+      `${base} Ensure Server-to-Server OAuth includes user:read:token (or user:read:token:admin) and ZOOM_HOST_USER_ID (${userId}) is a valid host on your Zoom account.`
+    );
   }
-
-  return {
-    zoomMeetingId: String(data.id),
-    zoomJoinUrl: data.join_url,
-    zoomPasscode: data.password ?? null
-  };
 }
 
 export async function registerMeetingRegistrant(
@@ -284,18 +396,9 @@ export async function registerMeetingRegistrant(
 
 export async function createZoomVirtualSession(
   kind: ZoomSessionKind,
-  params: {
-    topic: string;
-    startTime: Date;
-    endDate: Date;
-    description?: string | null;
-  },
+  params: ZoomVirtualSessionParams,
   orgId: string
-): Promise<{
-  zoomMeetingId: string;
-  zoomJoinUrl: string;
-  zoomPasscode: string | null;
-}> {
+): Promise<ZoomSessionCredentials> {
   if (kind === ZoomSessionKind.MEETING) {
     return createZoomMeeting(params, orgId);
   }

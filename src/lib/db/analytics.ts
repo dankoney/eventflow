@@ -1,7 +1,7 @@
 import { GuestStatus, Role, Tier } from "@prisma/client";
 
 import { prisma } from "@/lib/prisma";
-import { isRepScopedRole } from "@/lib/permissions";
+import { isEventLinkedRole, isSalesRepRole, isStaffRole, visibleEventsWhere } from "@/lib/permissions";
 
 export type TierDatum = { tier: string; count: number };
 export type StatusDatum = { status: GuestStatus; count: number; label: string };
@@ -19,22 +19,26 @@ export type EventAnalyticsData = {
 const STATUS_LABEL: Record<GuestStatus, string> = {
   INVITED: "Invited",
   REGISTERED: "Registered",
+  ACCEPTED: "Accepted",
   CHECKED_IN: "Checked in",
   JOINED: "Joined (virtual)",
-  NO_SHOW: "No-show"
+  NO_SHOW: "No-show",
+  DECLINED: "Declined"
 };
 
 function guestFilterForEvent(eventId: string, userId: string, role: Role) {
+  if (isStaffRole(role)) return { eventId, id: "__none__" };
   return {
     eventId,
-    ...(isRepScopedRole(role) ? { repId: userId } : {})
+    ...(isSalesRepRole(role) ? { repId: userId } : {})
   };
 }
 
 function guestFilterForOrg(orgId: string, userId: string, role: Role) {
+  if (isStaffRole(role)) return { event: { orgId }, id: "__none__" };
   return {
     event: { orgId },
-    ...(isRepScopedRole(role) ? { repId: userId } : {})
+    ...(isSalesRepRole(role) ? { repId: userId } : {})
   };
 }
 
@@ -143,9 +147,7 @@ export type OrgAnalyticsData = {
 export async function getOrgAnalytics(orgId: string, userId: string, role: Role): Promise<OrgAnalyticsData> {
   const gWhere = guestFilterForOrg(orgId, userId, role);
 
-  const eventWhere = isRepScopedRole(role)
-    ? ({ orgId, guests: { some: { repId: userId } } } as const)
-    : ({ orgId } as const);
+  const eventWhere = visibleEventsWhere(orgId, userId, role);
 
   const [tierRows, statusRows, totalGuests, totalEvents, eventsWithCounts] = await Promise.all([
     prisma.guest.groupBy({
@@ -168,7 +170,7 @@ export async function getOrgAnalytics(orgId: string, userId: string, role: Role)
         date: true,
         _count: {
           select: {
-            guests: isRepScopedRole(role) ? { where: { repId: userId } } : true
+            guests: isSalesRepRole(role) ? { where: { repId: userId } } : true
           }
         }
       },

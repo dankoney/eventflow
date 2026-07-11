@@ -1,0 +1,40 @@
+---
+description: "Core stack, conventions, and roles for EventFlow"
+alwaysApply: true
+---
+
+# EventFlow — Core Rules
+
+You are a senior full-stack engineer on Eventflow, a professional B2B event
+attendance tracking platform with Zoom integration.
+
+## Stack
+Next.js 14 App Router (src/app, never pages/) · TypeScript strict · Tailwind ·
+Prisma + PostgreSQL · NextAuth.js v5 (Prisma adapter) · Resend (transactional) ·
+Zoom Server-to-Server OAuth · jsQR + qrcode · Recharts · Zod · React Hook Form +
+@hookform/resolvers · TanStack Query · Lucide React.
+
+## Conventions
+- Server actions for ALL data mutations. Never API routes for mutations.
+- Zod validation before every DB write.
+- App Router file conventions: layout.tsx, page.tsx, loading.tsx, error.tsx.
+- Route-specific components co-locate with their route; shared components in
+  src/components/; business logic in src/lib/; DB queries in src/lib/db/; types
+  in src/types/.
+- cn() helper (clsx + tailwind-merge) for conditional classes.
+- All forms: React Hook Form + Zod resolver.
+- All server actions return { success: boolean, data?, error? }.
+- Every route protected by a NextAuth session check.
+- Never expose raw Prisma errors to the client.
+
+## Roles
+ADMIN: full access, org settings, all events.
+MARKETING: create/edit events, see all guests and analytics.
+SALES_REP: only assigned guests, can invite clients.
+
+## Existing DB models
+Organization, User, Event, Guest, CheckIn (prisma/schema.prisma).
+
+## Env vars already set
+DATABASE_URL, NEXTAUTH_SECRET, NEXTAUTH_URL, RESEND_API_KEY, ZOOM_CLIENT_ID,
+ZOOM_CLIENT_SECRET, ZOOM_ACCOUNT_ID.

@@ -1,8 +1,13 @@
-import { AttendMode, EventStatus, Prisma } from "@prisma/client";
+import { AttendMode, EventStatus, GuestStatus, Prisma } from "@prisma/client";
 
 import { sendEventReminderEmail } from "@/lib/email";
-import { prisma } from "@/lib/prisma";
+import { guestHasDeliverableEmail } from "@/lib/guest/contactRequirements";
 import { phoneToMnotifyRecipient, sendOrgMnotifyQuickSms } from "@/lib/mnotify";
+import { logMnotifySmsDelivery } from "@/lib/delivery/providerDelivery";
+import { logGuestNotificationDelivery } from "@/lib/notifications/guestNotificationDispatch";
+import { resolveGuestSmsPortalUrl } from "@/lib/guest/joinLinks";
+import { prisma } from "@/lib/prisma";
+import { renderEventReminderSms } from "@/lib/sms/guestNotificationCopy";
 import { sendOrgWhatsAppText } from "@/lib/whatsapp";
 import { getOpenZoomJoinAbsoluteUrl } from "@/lib/url";
 import { formatDate, formatLocationLine } from "@/lib/utils";
@@ -16,6 +21,16 @@ function anchorAt(eventDate: Date, hoursBefore: number): Date {
 function inDispatchWindow(now: Date, target: Date): boolean {
   return now.getTime() >= target.getTime() && now.getTime() < target.getTime() + WINDOW_MS;
 }
+
+/**
+ * Phase E suppression: skip guests who declined the smart-invitation, or who had
+ * notifications explicitly silenced (e.g. opt-out). Used as a `where` fragment for
+ * every reminder query so cron, manual "send now" and ad-hoc dispatches all agree.
+ */
+const reminderRecipientFilter = {
+  status: { not: GuestStatus.DECLINED },
+  notificationsSuppressedAt: null
+} as const satisfies Prisma.GuestWhereInput;
 
 export const eventReminderInclude = {
   location: true,
@@ -33,12 +48,23 @@ export async function deliverPrimaryReminderPayloads(
   eventId: string
 ): Promise<void> {
   const guests = await prisma.guest.findMany({
-    where: { eventId },
+    where: { eventId, ...reminderRecipientFilter },
     select: { id: true, email: true, name: true, mode: true, zoomLink: true }
   });
   const resendKey = event.org.resendApiKey?.trim() || undefined;
   if (event.reminderPrimaryEmail && guests.length) {
     for (const g of guests) {
+      if (!guestHasDeliverableEmail(g.email) || !g.email) {
+        void logGuestNotificationDelivery({
+          guestId: g.id,
+          eventId,
+          kind: "reminder_primary",
+          channel: "EMAIL",
+          status: "SKIPPED",
+          detail: "no deliverable email"
+        });
+        continue;
+      }
       try {
         const zoomForEmail =
           g.mode === AttendMode.VIRTUAL && (g.zoomLink || event.zoomJoinUrl)
@@ -54,14 +80,31 @@ export async function deliverPrimaryReminderPayloads(
           zoomLink: zoomForEmail ?? undefined,
           resendApiKeyOverride: resendKey
         });
-      } catch {
-        /* continue */
+        void logGuestNotificationDelivery({
+          guestId: g.id,
+          eventId,
+          kind: "reminder_primary",
+          channel: "EMAIL",
+          status: "SENT",
+          recipient: g.email,
+          detail: "email"
+        });
+      } catch (e) {
+        void logGuestNotificationDelivery({
+          guestId: g.id,
+          eventId,
+          kind: "reminder_primary",
+          channel: "EMAIL",
+          status: "FAILED",
+          recipient: g.email,
+          detail: e instanceof Error ? e.message : String(e)
+        });
       }
     }
   }
   if (event.reminderPrimaryWhatsapp) {
     const withPhone = await prisma.guest.findMany({
-      where: { eventId, NOT: { phone: null } },
+      where: { eventId, NOT: { phone: null }, ...reminderRecipientFilter },
       select: { phone: true },
       take: 50
     });
@@ -74,21 +117,42 @@ export async function deliverPrimaryReminderPayloads(
   }
   if (event.reminderPrimarySms) {
     const withPhone = await prisma.guest.findMany({
-      where: { eventId, NOT: { phone: null } },
-      select: { phone: true },
+      where: { eventId, NOT: { phone: null }, ...reminderRecipientFilter },
+      select: { id: true, phone: true, email: true },
       take: 500
     });
-    const nums = [
-      ...new Set(
-        withPhone.map((r) => phoneToMnotifyRecipient(r.phone)).filter((x): x is string => Boolean(x))
-      )
-    ];
-    if (nums.length) {
-      await sendOrgMnotifyQuickSms(
-        event.orgId,
-        nums,
-        `Reminder: ${event.name} at ${formatDate(event.date)}`
-      );
+    for (const row of withPhone) {
+      const num = phoneToMnotifyRecipient(row.phone);
+      if (!num) {
+        void logGuestNotificationDelivery({
+          guestId: row.id,
+          eventId,
+          kind: "reminder_primary",
+          channel: "SMS_ONLY",
+          status: "SKIPPED",
+          recipient: row.phone,
+          detail: "Invalid phone for SMS."
+        });
+        continue;
+      }
+      const hasEmail = guestHasDeliverableEmail(row.email);
+      const joinUrl = hasEmail ? null : await resolveGuestSmsPortalUrl(row.id);
+      const body = renderEventReminderSms({
+        eventName: event.name,
+        whenLabel: formatDate(event.date),
+        hasEmail,
+        joinUrl
+      });
+      const smsRes = await sendOrgMnotifyQuickSms(event.orgId, [num], body);
+      await logMnotifySmsDelivery({
+        orgId: event.orgId,
+        guestId: row.id,
+        eventId,
+        kind: "reminder_primary",
+        recipient: row.phone,
+        messageBody: body,
+        smsRes
+      });
     }
   }
 }
@@ -102,51 +166,91 @@ export async function deliverFinalReminderPayloads(
   eventId: string
 ): Promise<void> {
   const guests = await prisma.guest.findMany({
-    where: { eventId },
+    where: { eventId, ...reminderRecipientFilter },
     select: { id: true, email: true, name: true, mode: true, zoomLink: true, qrCode: true }
   });
   const resendKeyFinal = event.org.resendApiKey?.trim() || undefined;
   if (event.reminderFinalWhatsapp) {
     const withPhone = await prisma.guest.findMany({
-      where: { eventId, NOT: { phone: null } },
-      select: { id: true, phone: true, mode: true, zoomLink: true, qrCode: true },
+      where: { eventId, NOT: { phone: null }, ...reminderRecipientFilter },
+      select: { id: true, phone: true, mode: true, zoomLink: true, qrCode: true, email: true },
       take: 50
     });
     for (const row of withPhone) {
       if (!row.phone) continue;
       const e164 = row.phone.replace(/\D/g, "");
       if (e164.length < 10) continue;
-      const bits = [`Final reminder: ${event.name}`];
+      const hasEmail = guestHasDeliverableEmail(row.email);
       const tracked =
         row.mode === AttendMode.VIRTUAL && (row.zoomLink || event.zoomJoinUrl)
           ? getOpenZoomJoinAbsoluteUrl(row.id) ?? row.zoomLink ?? event.zoomJoinUrl
           : null;
+      const portalUrl = await resolveGuestSmsPortalUrl(row.id);
+      const bits = [`Final reminder: ${event.name}`];
       if (tracked) bits.push(`Join: ${tracked}`);
       else if (row.zoomLink) bits.push(`Zoom: ${row.zoomLink}`);
-      if (row.qrCode) bits.push("Check-in QR was emailed at registration.");
+      else if (hasEmail && row.qrCode) bits.push("Check-in QR was emailed at registration.");
+      else if (!hasEmail && portalUrl) bits.push(`Details: ${portalUrl}`);
       await sendOrgWhatsAppText(event.orgId, `+${e164}`, bits.join("\n"));
     }
   }
   if (event.reminderFinalSms) {
     const withPhoneSms = await prisma.guest.findMany({
-      where: { eventId, NOT: { phone: null } },
-      select: { id: true, phone: true, mode: true, zoomLink: true, qrCode: true },
+      where: { eventId, NOT: { phone: null }, ...reminderRecipientFilter },
+      select: { id: true, phone: true, mode: true, zoomLink: true, qrCode: true, email: true },
       take: 200
     });
     for (const row of withPhoneSms) {
       const num = phoneToMnotifyRecipient(row.phone);
-      if (!num) continue;
-      const bits = [`Final: ${event.name}`];
+      if (!num) {
+        void logGuestNotificationDelivery({
+          guestId: row.id,
+          eventId,
+          kind: "reminder_final",
+          channel: "SMS_ONLY",
+          status: "SKIPPED",
+          recipient: row.phone,
+          detail: "Invalid phone for SMS."
+        });
+        continue;
+      }
+      const hasEmail = guestHasDeliverableEmail(row.email);
       const tracked =
         row.mode === AttendMode.VIRTUAL && (row.zoomLink || event.zoomJoinUrl)
           ? getOpenZoomJoinAbsoluteUrl(row.id) ?? row.zoomLink ?? event.zoomJoinUrl
           : null;
-      if (tracked) bits.push(tracked);
-      else if (row.qrCode) bits.push("QR was emailed at registration.");
-      await sendOrgMnotifyQuickSms(event.orgId, [num], bits.join(" ").slice(0, 400));
+      const portalUrl = await resolveGuestSmsPortalUrl(row.id);
+      const body = renderEventReminderSms({
+        eventName: event.name,
+        whenLabel: formatDate(event.date),
+        hasEmail,
+        joinUrl: tracked ?? (!hasEmail ? portalUrl : null),
+        isFinal: true
+      });
+      const smsRes = await sendOrgMnotifyQuickSms(event.orgId, [num], body);
+      await logMnotifySmsDelivery({
+        orgId: event.orgId,
+        guestId: row.id,
+        eventId,
+        kind: "reminder_final",
+        recipient: row.phone,
+        messageBody: body,
+        smsRes
+      });
     }
   }
   for (const g of guests) {
+    if (!guestHasDeliverableEmail(g.email) || !g.email) {
+      void logGuestNotificationDelivery({
+        guestId: g.id,
+        eventId,
+        kind: "reminder_final",
+        channel: "EMAIL",
+        status: "SKIPPED",
+        detail: "no deliverable email"
+      });
+      continue;
+    }
     try {
       const zoomForEmail =
         g.mode === AttendMode.VIRTUAL && (g.zoomLink || event.zoomJoinUrl)
@@ -163,8 +267,25 @@ export async function deliverFinalReminderPayloads(
         qrPayload: g.qrCode,
         resendApiKeyOverride: resendKeyFinal
       });
-    } catch {
-      /* continue */
+      void logGuestNotificationDelivery({
+        guestId: g.id,
+        eventId,
+        kind: "reminder_final",
+        channel: "EMAIL",
+        status: "SENT",
+        recipient: g.email,
+        detail: "email"
+      });
+    } catch (e) {
+      void logGuestNotificationDelivery({
+        guestId: g.id,
+        eventId,
+        kind: "reminder_final",
+        channel: "EMAIL",
+        status: "FAILED",
+        recipient: g.email,
+        detail: e instanceof Error ? e.message : String(e)
+      });
     }
   }
 }

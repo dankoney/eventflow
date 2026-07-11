@@ -1,6 +1,6 @@
 "use client";
 
-import { AttendMode, EventStatus, GuestStatus, ZoomSessionKind } from "@prisma/client";
+import { AttendMode, EventStatus, EventType, GuestStatus, ZoomSessionKind } from "@prisma/client";
 import { ExternalLink, Video } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
@@ -12,7 +12,8 @@ import { formatDate } from "@/lib/utils";
 export type VirtualJoinPanelProps = {
   guestId: string;
   guestName: string;
-  mode: AttendMode;
+  /** Null = hybrid guest has not yet chosen virtual vs in person. */
+  mode: AttendMode | null;
   status: GuestStatus;
   /** Resolved href for Join Zoom (tracked Eventflow URL when configured, else raw Zoom). */
   zoomJoinHref: string | null;
@@ -27,6 +28,9 @@ export type VirtualJoinPanelProps = {
   zoomSessionKind: ZoomSessionKind;
   organizationName: string;
   eventStatus: EventStatus;
+  eventType: EventType;
+  /** After invitation accept redirect (`?invite=`). */
+  invitationNotice?: "accepted" | "invalid" | null;
 };
 
 export function VirtualJoinPanel({
@@ -44,7 +48,9 @@ export function VirtualJoinPanel({
   zoomPasscode,
   zoomSessionKind,
   organizationName,
-  eventStatus
+  eventStatus,
+  eventType,
+  invitationNotice = null
 }: VirtualJoinPanelProps) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -72,7 +78,16 @@ export function VirtualJoinPanel({
     );
   }
 
-  if (mode === AttendMode.IN_PERSON) {
+  if (invitationNotice === "invalid") {
+    return (
+      <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900" role="alert">
+        This invitation link is invalid or was already used. If you still need access, ask the organizer to resend
+        your invitation.
+      </div>
+    );
+  }
+
+  if (mode === AttendMode.IN_PERSON && eventType !== EventType.HYBRID) {
     return (
       <div className="space-y-4">
         <div>
@@ -86,9 +101,48 @@ export function VirtualJoinPanel({
           {when} · {eventLocation}
         </p>
         <p className="text-sm text-slate-600">
-          Use the QR code from your confirmation email at the venue check-in. This page is intended for virtual
-          attendees.
+          Use the QR code from your confirmation email at the venue check-in.
         </p>
+      </div>
+    );
+  }
+
+  if (mode === AttendMode.IN_PERSON && eventType === EventType.HYBRID) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <p className="text-sm font-medium uppercase tracking-wide text-slate-500">{organizationName}</p>
+          <h1 className="mt-1 text-2xl font-semibold tracking-tight text-slate-900">{eventName}</h1>
+          <p className="mt-2 text-sm text-slate-600">
+            Hybrid · {when}
+          </p>
+        </div>
+        <p className="text-slate-700">
+          Hi <span className="font-medium text-slate-900">{guestName}</span>, you are registered for in-person
+          attendance. You can still open the virtual session below if you need to join online.
+        </p>
+        {zoomRedirectError ? (
+          <div
+            className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+            role="alert"
+          >
+            {zoomRedirectError}
+          </div>
+        ) : null}
+        {zoomJoinHref ? (
+          <a
+            href={zoomJoinHref}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-5 py-3 text-sm font-medium text-white transition hover:bg-slate-800"
+          >
+            <Video className="h-4 w-4" aria-hidden />
+            Join Zoom
+            <ExternalLink className="h-3.5 w-3.5 opacity-80" aria-hidden />
+          </a>
+        ) : (
+          <p className="text-sm text-slate-600">No virtual join link is available for this registration yet.</p>
+        )}
       </div>
     );
   }
@@ -103,13 +157,33 @@ export function VirtualJoinPanel({
 
   const attended = status === GuestStatus.JOINED || status === GuestStatus.CHECKED_IN;
   const canMarkJoined =
-    status === GuestStatus.REGISTERED || status === GuestStatus.INVITED;
+    status === GuestStatus.REGISTERED ||
+    status === GuestStatus.INVITED ||
+    status === GuestStatus.ACCEPTED;
   const sessionNoun = zoomSessionKind === ZoomSessionKind.MEETING ? "meeting" : "webinar";
   const confirmJoinedLabel =
     zoomSessionKind === ZoomSessionKind.MEETING ? "I've joined the meeting" : "I've joined the webinar";
 
   return (
     <div className="space-y-6">
+      {invitationNotice === "accepted" ? (
+        <div
+          className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900"
+          role="status"
+        >
+          Invitation accepted — you are on the roster. Join below when the session starts (virtual attendance is
+          recorded when you use Join Zoom or confirm below).
+        </div>
+      ) : null}
+      {mode == null ? (
+        <div
+          className="rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-900"
+          role="status"
+        >
+          Attendance mode is not set yet. Use <span className="font-semibold">Join Zoom</span> when you join online
+          (counts as virtual), or check in at the venue for in person.
+        </div>
+      ) : null}
       {zoomRedirectError ? (
         <div
           className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"

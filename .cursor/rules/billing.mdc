@@ -1,0 +1,357 @@
+---
+description: "Paystack billing/subscriptions module — trials, dunning, entitlements, webhooks"
+globs: ["src/app/**/billing/**", "src/app/(dashboard)/settings/**/billing/**", "src/app/(dashboard)/superadmin/**", "src/app/api/webhooks/paystack/**", "src/app/api/cron/billing/**", "src/lib/billing/**", "src/lib/db/billing*.ts", "src/lib/db/subscription*.ts", "src/lib/actions/billing*.ts", "src/lib/actions/subscription*.ts", "src/lib/actions/platform.actions.ts", "src/lib/email/billing*.ts", "prisma/schema.prisma"]
+alwaysApply: false
+---
+
+# Billing & Subscriptions Module Rules
+
+This module adds Paystack-powered subscription billing to EventFlow, kept
+architecturally separate from transactional email and marketing broadcast
+(different compliance rules, different failure domain). Paystack is the payment
+rail; our Postgres/Prisma DB is the source of truth for **access**.
+
+## Non-negotiable architecture decisions
+
+1. **Three layers — never collapse them:**
+   ```
+   Paystack (money)  →  Billing records (our DB)  →  Entitlements (Organization.plan + limits)
+   ```
+   App code gates features via `src/lib/billing/entitlements.ts` (and helpers it
+   exports). Never scatter Paystack plan codes or subscription status checks
+   across dozens of files.
+
+2. **Currency:** GHS only at launch. All Paystack plan codes, transaction
+   amounts, and invoice mirrors use GHS. Do not add multi-currency until
+   explicitly asked.
+
+3. **Pricing shape:** Flat per-org/month for PRO at launch. No per-seat or
+   per-event metering yet. Per-seat can be a later add-on layered on top of
+   entitlements config — do not bake seat counting into Phase 1 schema.
+
+4. **Enterprise:** Manual-only via platform owner (`/superadmin`) for now.
+   Platform owner sets `Organization.plan = ENTERPRISE` and manages renewal
+   outside self-serve Paystack checkout. Revisit Paystack invoice links only if
+   manual becomes a bottleneck — do not build enterprise invoicing in Phase 1.
+
+5. **`Organization.plan` = feature tier only** (`FREE` | `PRO` | `ENTERPRISE`) —
+   what product capabilities the org may use *right now*. **`Subscription.status`**
+   = billing relationship (`trialing`, `active`, `past_due`, `cancelled`,
+   `trial_expired`, `suspended`, `none`). These are intentionally separate:
+   - During a card-free trial: `plan = PRO`, `status = trialing` — same PRO
+     features as a paying customer.
+   - After trial expiry without payment: `plan = FREE`, `status = trial_expired`.
+   - Paying PRO: `plan = PRO`, `status = active`.
+   - **MRR / revenue metrics** must filter on `Subscription.status = active`
+     (and exclude `trialing`, `trial_expired`, `cancelled`, etc.) — never count
+     `Organization.plan = PRO` alone.
+   - **Feature gating in app code** must go through `getOrgBillingAccess()` /
+     `orgCan()` — not raw `org.plan`. Direct `org.plan` reads are allowed only
+     for display (superadmin list, billing settings label) or analytics queries
+     that also filter on `Subscription.status`.
+   - Automated plan changes (webhooks, crons) go through
+     `applySubscriptionEntitlements()` only.
+   - **Carve-out:** platform-owner superadmin actions (manual ENTERPRISE override,
+     comped PRO, support corrections) may set `Organization.plan` directly via
+     a dedicated action (e.g. `setOrgPlanOverrideAction`) that logs the change
+     and optionally clears/syncs `Subscription` fields — but never from webhook
+     handlers inline.
+
+6. **Do NOT overload `Organization.activatedAt` for billing.** Today it means
+   *onboarding activation only* (admin clicked the welcome link; sign-in is
+   blocked while null — see `src/auth.ts`). It is set on first token consume in
+   `activateOrgWithToken`, cleared only by platform owner per schema comment,
+   and shown as "pending activation" in `/superadmin`. Billing states are
+   orthogonal:
+   - **Trial expired / downgraded to FREE** → user keeps login; lose PRO features.
+   - **`past_due` soft-lock (3-day grace)** → login OK; read-only; block *new*
+     event and broadcast creation.
+   - **Hard suspend (dunning exhausted)** → block dashboard access via
+     `Subscription.status = suspended` (checked in the dashboard layout →
+     `/billing/suspended`). OTP sign-in is still allowed so the org can renew.
+     Never set `activatedAt = null` for billing — that conflates "never onboarded"
+     with "unpaid subscriber".
+
+7. **Card-free trial — no silent conversion.** Trial is **90 days**, no card
+   upfront. Paystack cannot auto-charge at trial end without a stored
+   authorization. Build explicit conversion:
+   - Reminder emails at trial day **60**, **80**, and **89** (relative to
+     `trialStartsAt` / `trialEndsAt`).
+   - Org admin must complete **Settings → Billing → Add payment / Subscribe**
+     (authorization-first flow — see § Subscribe flow).
+   - Lifecycle cron at `trialEndsAt`: if still no Paystack authorization,
+     call `applySubscriptionEntitlements` to set `plan = FREE` and
+     `Subscription.status = trial_expired`. **Do not suspend.** User retains
+     read access and FREE-tier limits.
+   - **Cancelled subscriptions** (`cancelAtPeriodEnd = true`): org keeps
+     `plan` and access until `currentPeriodEnd`. A separate lifecycle cron check
+     (same route as trial expiry: `src/app/api/cron/billing/lifecycle/route.ts`)
+     downgrades at `currentPeriodEnd` — do not fold this into dunning. Paystack
+     may send `subscription.disable` at period end, but do not rely on webhooks
+     alone; cron is the backstop.
+
+8. **Grace period after failed renewal charge:** **3 days** `past_due`
+   soft-lock — read-only workspace, no new events, no new broadcast campaigns.
+   Existing data viewable. Banner in dashboard. After grace, enter dunning
+   retries (§ Dunning). Only after retries are exhausted → hard suspend.
+
+9. **Dunning requires our own retry cron.** Paystack does **not** auto-retry
+   failed subscription charges. Implement `src/app/api/cron/billing/dunning/route.ts`
+   (or equivalent) that re-attempts charge against the stored Paystack
+   authorization on a defined schedule (e.g. day 1, 3, 5 after first failure),
+   sends dunning emails, and transitions state. Webhook `invoice.payment_failed`
+   alone is insufficient — it only notifies.
+   **Phase gap (intentional):** Phase 1 may write `status = suspended` to the DB,
+   but login blocking and mutation guards are Phase 4. Until then, `suspended` is
+   inert metadata — safe to run crons early without accidentally locking users out.
+
+## Phase 4 — Enforcement (live)
+
+1. **`SUSPENDED` → dashboard locked**, not OTP blocked. Users may complete email-OTP
+   sign-in; the dashboard layout redirects to `/billing/suspended` (renew checkout
+   lives there). Platform owners are exempt from the dashboard gate. Do **not**
+   reject suspended orgs in `authorize()` — that produced a misleading
+   "invalid/expired code" and blocked renew for users without an existing session.
+2. **`past_due` soft-lock** → `orgCan(..., "create_event"|"send_broadcast")` fails via
+   `canCreateContent === false`. Wired through `requireBillingCapability` on:
+   - `createEvent` / `cloneEvent`
+   - `createCampaignAction` / `sendCampaignAction`
+3. **`trial_expired` / FREE** → same guards deny PRO create capabilities.
+4. **Grandfathered** PRO/ENTERPRISE with no Subscription row remain allowed
+   (`status = NONE` + plan PRO/ENTERPRISE via entitlements).
+5. Do **not** clear `activatedAt` for billing.
+
+## Phase 6 — Plan limit enforcement (live)
+
+Central config: `PLAN_LIMITS` in `src/lib/billing/entitlements.ts`.
+Helpers: `src/lib/billing/planLimits.ts` (`ACTIVE_EVENT_STATUSES` = draft/published/live).
+
+Enforced on:
+- create/clone event (+ concurrent virtual/hybrid when type is VIRTUAL/HYBRID)
+- guest create paths (organizer + public register via `createGuestWithSideEffects`)
+- team seat create (`createOrgUser`)
+- broadcast create (campaigns/month) + send (recipients/month) — **additive** to
+  `MODULE_BROADCAST_ENABLED` and `send_broadcast` billing capability
+- registration form field count
+- CRM / media / polling admin actions (env module + plan module catalog)
+
+Grandfathering: orgs already over a FREE cap keep existing rows; new creates fail
+with an upgrade message.
+
+## Phase 5 — Superadmin billing ops (live)
+
+Route: `/superadmin/orgs/[orgId]/billing` (platform-owner only).
+
+- **Drift panel:** local DB vs Paystack live (`fetchPaystackLiveStateAction` is **GET-only**,
+  no Paystack side effects).
+- **Toolkit** (`src/lib/actions/superadminBilling.actions.ts`): suspend (local-only by
+  default + visible `syncPaystack`), reinstate, force-cancel (immediate access end +
+  plan FREE — not period-end cancel), plan override, comp grant/revoke (auto-reinstates
+  from SUSPENDED), trial extend/set/grant/force-expire (`allowRepeat` default false),
+  set `currentPeriodEnd`, resync from Paystack, mark invoice paid, create manual invoice,
+  pause/resume/reset dunning (reset = counters only), auto-renewal on/off behalf of org.
+- Every mutation requires a **reason**; destructive ops require **confirm**.
+- Audit: `ManualBillingAction` (per-org, actor, before/after JSON) — not `PaymentEvent`.
+- Comp: `Subscription.compPlan` + `compEndsAt` (distinct from trial). Lifecycle cron
+  clears expired comps. Dunning cron skips when `dunningPausedAt` is set.
+- Manual invoices / offline payments: `BillingInvoice.source = MANUAL` + **Manual**
+  badge in customer and superadmin invoice history. Superadmin action is
+  **Log offline payment** (`logOfflinePaymentAction`) — records a payment already
+  received outside Paystack; not sent to the customer.
+
+10. **Subscribe / trial-conversion pattern (authorization-first):** Paystack
+    requires an existing authorization before a subscription can bill. Self-serve
+    subscribe and trial conversion share one flow:
+    - Initialize transaction (`/transaction/initialize`) with **plan code** on
+      the first charge so Paystack auto-creates the subscription on success.
+    - Customer completes Paystack checkout (card or Mobile Money).
+    - On `charge.success` / `subscription.create` webhook → store
+      `authorizationCode`, `customerCode`, `subscriptionCode`; sync entitlements.
+    - Never trust the Paystack redirect/callback URL alone — webhooks only for
+      state changes.
+
+11. **Mutations are server actions** per general EventFlow rules — return
+    `{ success, data?, error? }`. Exceptions (external callers only):
+    - Paystack webhook receiver: `src/app/api/webhooks/paystack/route.ts`
+    - Billing cron routes: `src/app/api/cron/billing/**` (secured by
+      `CRON_SECRET` or Vercel cron auth — same pattern as other crons).
+
+12. **PCI:** Never store card numbers or CVV. Only store Paystack identifiers:
+    `customerCode`, `subscriptionCode`, `authorizationCode`, `emailToken` (if
+    needed for charge-authorization reuse).
+
+13. **Roles:** Billing settings (view invoices, add payment method, change plan)
+    are **ADMIN-only** unless explicitly extended. MARKETING and SALES_REP must
+    not initiate charges. Platform owners use `/superadmin` for cross-tenant
+    billing ops — not customer org Settings.
+
+## FREE tier behavior (must match trial downgrade)
+
+- `isFreeOrgPlan()` gates **feedback PDF watermark**.
+- **Phase 6 plan limits** (enforced on create/mutate paths):
+  - Active events (`DRAFT` | `PUBLISHED` | `LIVE`): FREE 3 · PRO 20 · ENTERPRISE ∞
+  - Guests per event: FREE 100 · PRO 2000 · ENTERPRISE ∞
+  - Team seats: FREE 2 · PRO 10 · ENTERPRISE ∞
+  - Concurrent virtual/hybrid active events: FREE 1 · PRO/ENTERPRISE ∞
+  - Broadcast campaigns / recipients per UTC month: FREE 0 · PRO 20 / 10k · ENTERPRISE ∞
+  - Custom registration fields: FREE 10 · PRO 40 · ENTERPRISE 80
+  - Modules: FREE = checkin, feedback, analytics, deliveries (+ Zoom within concurrent cap).
+    PRO+ adds broadcast, crm, polling, media. Env `MODULE_*_ENABLED` remains additive
+    (server must enable the module **and** the plan must include it).
+- `create_event` is allowed on FREE within caps (not PRO-only). `send_broadcast` stays PRO+.
+- Trial downgrade to FREE: set `plan = FREE`, keep `activatedAt`, keep login; apply FREE
+  limits only (do not hard-lock). Existing over-limit data is retained; new creates block.
+
+## Data model additions (Prisma)
+
+Add models following existing `schema.prisma` naming (PascalCase models,
+camelCase fields). Suggested minimum:
+
+| Model | Purpose |
+|-------|---------|
+| `BillingCustomer` | `orgId` (unique), `paystackCustomerCode`, billing email |
+| `Subscription` | `orgId` (@unique), `status` enum, `currency` (default GHS), Paystack codes, trial/dunning/period fields |
+| `BillingInvoice` | Direct `orgId` + optional `subscriptionId`; amounts in pesewas; `currency` (default GHS) |
+| `PaymentEvent` | `paystackEventId` (@unique), nullable `orgId` (best-effort from payload), raw JSON audit |
+
+`Subscription.status` enum (minimum): `trialing` | `active` | `past_due` |
+`cancelled` | `trial_expired` | `suspended` | `none` (no subscription yet).
+
+Use `trialReminderDay60SentAt`, `trialReminderDay80SentAt`,
+`trialReminderDay89SentAt` on `Subscription` to ensure day-60/80/89 emails send
+exactly once.
+
+Indexes: `PaymentEvent.paystackEventId` unique; `Subscription.orgId` unique;
+`BillingCustomer.orgId` unique.
+
+Do not duplicate org name/email into billing tables beyond what's needed for
+Paystack customer creation.
+
+## Pre-billing org grandfathering (explicit policy)
+
+`startBillingTrialForOrg` runs **only** from `provisionOrganization` (new workspaces).
+There is **no** retroactive trial backfill for orgs that existed before the billing
+migration.
+
+| Existing org state | Behavior |
+|---|---|
+| `plan = PRO` or `ENTERPRISE`, no `Subscription` row (typical superadmin comp) | **Grandfathered** — `hasProFeatureAccess` treats `plan = PRO` + `status = NONE` as manual comp; ENTERPRISE always has full access. No silent downgrade. |
+| `plan = FREE`, no `Subscription` row | Stays FREE; no auto-trial. Superadmin may comp (`setOrgPlanOverride`) or provision-style trial can be added manually later if needed. |
+| New provision (non-ENTERPRISE) | 90-day card-free trial via `startBillingTrialForOrg`. |
+
+Do not run lifecycle trial-expiry against orgs without a `TRIALING` subscription row.
+Phase 4 enforcement must respect grandfathered PRO/ENTERPRISE until billing state
+exists or superadmin changes plan.
+
+## Entitlements & enforcement
+
+Centralize in `src/lib/billing/entitlements.ts`:
+- `PLAN_LIMITS` config (FREE vs PRO vs ENTERPRISE caps).
+- `deriveOrgBillingAccess(ctx)` — pure derivation when org + subscription are already loaded.
+- `orgCanFromContext(ctx, capability)` — same, for batch paths/tests.
+
+Server actions and routes should call **`getOrgBillingAccess(orgId)`** and **`orgCan(orgId, capability)`** in `src/lib/db/billing.ts` (loads from DB). Do not call `deriveOrgBillingAccess` directly unless you already have both rows in hand.
+
+Enforcement order (all required for gated actions):
+1. Auth session (existing).
+2. `activatedAt` check (onboarding — unchanged).
+3. Billing access (`suspended` → dashboard lock; `past_due` → deny create mutations;
+   `trial_expired` + FREE → FREE limits only, not hard-lock).
+4. Plan limits (active events, guests/event, seats, virtual concurrency, broadcast
+   volume, registration fields) via `src/lib/billing/planLimits.ts`.
+
+Start with **server-action guards** on create/mutate paths; dashboard banners for
+`past_due` / trial reminders remain in UI.
+
+## Webhook safety
+
+`src/app/api/webhooks/paystack/route.ts` must:
+1. Verify Paystack signature (`x-paystack-signature` HMAC) **before** any DB write.
+2. Insert raw event into `PaymentEvent` first (idempotent on `paystackEventId`).
+3. Dispatch to typed handlers only if insert succeeded (new event).
+4. Never expose raw Paystack errors to clients.
+5. Handlers must be retry-safe (Paystack resends on non-2xx).
+
+**Events to handle at launch:**
+
+| Event | Action |
+|-------|--------|
+| `charge.success` | Link authorization; confirm subscription if plan code present |
+| `charge.failed` | Log; may trigger dunning entry if renewal context |
+| `subscription.create` | Store codes; set `active` or `trialing`; sync plan |
+| `subscription.disable` | Set `cancelled`; schedule downgrade at period end |
+| `subscription.not_renew` | Set `cancelAtPeriodEnd`; notify admin |
+| `subscription.expiring_cards` | Email admin to update payment method |
+| `invoice.create` / `invoice.update` | Upsert `BillingInvoice` mirror |
+| `invoice.payment_failed` | Set `past_due`, start grace + dunning schedule |
+
+Ignore unhandled event types but still log them to `PaymentEvent`.
+
+**Unresolved org:** actionable events in `PAYSTACK_ORG_REQUIRED_EVENTS` that cannot map to an org must set `PaymentEvent.processingError` (`org_unresolved:…`), log `[paystack-webhook] org unresolved`, and return `orgUnresolved: true` — never silently drop revenue-impacting events.
+
+## Email (transactional, not broadcast)
+
+Trial reminders and dunning emails use the **transactional** Resend path
+(`src/lib/email.ts` or `src/lib/email/billing*.ts`), not the broadcast module.
+Templates: trial day 60/80/89, payment failed, card expiring, subscription
+cancelled, suspended warning.
+
+## Org Settings → Billing (Phase 3)
+
+`/dashboard/settings/billing` (ADMIN-only) must show:
+- Current plan + `Subscription.status`, trial runway, period end, billing email, card last4
+- Subscribe / update payment (authorization-first checkout) when no authorization on file
+- **Auto-renewal On/Off toggle** (not separate Cancel / Resume buttons)
+  - Off = Paystack `/subscription/disable` → local `cancelAtPeriodEnd`; access until `currentPeriodEnd`
+  - On = silent re-establish (try `/subscription/enable`; if refused, `POST /subscription` with
+    stored `authorizationCode` + `start_date = currentPeriodEnd`) — **no charge now**
+- **Renew now** = full Paystack checkout (same lifecycle as subscribe — user can change
+  card / MoMo). UI lets them pick **monthly or yearly**. Saved card is shown as the
+  default hint; checkout uses the same billing customer email so Paystack can offer the
+  saved method. Webhook extends `currentPeriodEnd` from `max(now, currentPeriodEnd)` and
+  schedules the next Paystack debit at the new end (no silent `charge_authorization`).
+- Invoice history from `BillingInvoice` (read-only)
+- Banners for `past_due` and `cardExpiringNotifiedAt`
+
+Dashboard layout surfaces the same trial / past_due / card-expiring alerts for ADMINs.
+
+Checkout callback `/billing/callback` polls `getBillingCheckoutStatusAction` until webhook
+activates the subscription (or verify reports failure), then redirects to Billing settings.
+Transaction references are opaque (`ef-…` / `renew-…`); org id is metadata only.
+
+## Cancel / resume vs Paystack state machine
+
+Paystack statuses: `active` → disable → `non-renewing` → (at period end) → `cancelled`.
+
+- **`POST /subscription/disable`** with `{ code, token }` is correct for auto-renewal Off.
+  Webhook `subscription.not_renew` confirms `non-renewing`.
+- **`POST /subscription/enable`** may fail for plan-on-transaction-init subs with
+  `"Subscription has been cancelled, and cannot be reactivated"` even while GET reports
+  `non-renewing`. Fallback: **`POST /subscription`** with customer + plan + authorization +
+  `start_date` = current period end (no immediate charge).
+- Ignore `subscription.disable` / `not_renew` webhooks whose `subscription_code` does not
+  match the code currently stored on our `Subscription` row (stale after replace).
+- Store `Subscription.paystackStatus` from webhooks/fetch for ops visibility.
+
+## Environment variables
+
+- `PAYSTACK_SECRET_KEY` — server-only; webhooks + API calls.
+- `PAYSTACK_PUBLIC_KEY` — client checkout init only.
+- `PAYSTACK_WEBHOOK_SECRET` — if separate from secret key for signature verify
+  (use Paystack dashboard secret; document which env var in `.env.example`).
+- `PAYSTACK_PRO_PLAN_CODE` — Paystack plan code for flat monthly PRO (GHS).
+- `PAYSTACK_PRO_YEARLY_PLAN_CODE` — Paystack plan code for yearly PRO (GHS).
+- `CRON_SECRET` — protect billing cron routes.
+
+## Paystack dashboard setup (manual, pre-Phase-1)
+
+Create one recurring **Plan** in Paystack dashboard: PRO monthly, GHS, flat price.
+Record plan code in env. FREE and ENTERPRISE are not Paystack plans — FREE is
+local default; ENTERPRISE is manual `Organization.plan` override.
+
+## When in doubt
+
+If a decision here conflicts with something faster/simpler, ask before
+deviating — these constraints exist for revenue integrity, Ghana payment
+realities (Mobile Money + cards), and not locking out users who simply let a
+card-free trial expire.

@@ -8,10 +8,11 @@ import {
   Tier
 } from "@prisma/client";
 
+import { isZoomSyntheticAnonEmail } from "@/lib/zoom/anonRosterName";
 import { prisma } from "@/lib/prisma";
 import {
   fetchZoomDashboardParticipants,
-  fetchZoomParticipantReport,
+  fetchZoomParticipantReportWithKindFallback,
   mergeZoomParticipantRows,
   participantEmailFromReport,
   participantStableId,
@@ -23,7 +24,9 @@ export type SyncZoomParticipantsResult = {
   reportRows: number;
   liveDashboardRows: number;
   pastDashboardRows: number;
+  pastOneDashboardRows: number;
   matchedUpdated: number;
+  matchedNoChange: number;
   externalCreated: number;
   skippedNoIdentifier: number;
 };
@@ -41,32 +44,95 @@ function syntheticEmailForParticipant(eventId: string, participantId: string): s
   return `zoom-${eventId.slice(0, 8)}-${safePid}@external.eventflow`.slice(0, 120);
 }
 
+function participantFallsWithinEventWindow(
+  p: ZoomReportParticipant,
+  eventStart: Date,
+  eventEnd: Date,
+  now: Date,
+  isLive: boolean
+): boolean {
+  const raw = (p.join_time ?? "").trim();
+  if (!raw) return true;
+  const joinedAt = new Date(raw);
+  if (Number.isNaN(joinedAt.getTime())) return true;
+  // For live sessions, strongly bias to "today's" active occurrence to avoid test runs.
+  const from = isLive
+    ? eventStart.getTime() - 6 * 60 * 60 * 1000
+    : eventStart.getTime() - 2 * 60 * 60 * 1000;
+  const to = isLive
+    ? Math.max(eventEnd.getTime() + 2 * 60 * 60 * 1000, now.getTime() + 60 * 60 * 1000)
+    : eventEnd.getTime() + 12 * 60 * 60 * 1000;
+  const ts = joinedAt.getTime();
+  return ts >= from && ts <= to;
+}
+
 /** Stable synthetic email for name-only participants (re-sync safe when join_time is present). */
+function normalizeZoomDisplayName(value: string): string {
+  return value.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+/** Match roster guests when Zoom reports display name only (no email). */
+async function findGuestByZoomDisplayName(eventId: string, displayName: string) {
+  const norm = normalizeZoomDisplayName(displayName);
+  if (!norm || norm.length < 2) return null;
+
+  const candidates = await prisma.guest.findMany({
+    where: {
+      eventId,
+      joinSource: { not: GuestJoinSource.EXTERNAL_JOIN },
+      status: { not: GuestStatus.DECLINED }
+    },
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      zoomParticipantReportId: true
+    }
+  });
+
+  const matches = candidates.filter((g) => {
+    if (isZoomSyntheticAnonEmail(g.email)) return false;
+    return normalizeZoomDisplayName(g.name) === norm;
+  });
+
+  if (matches.length !== 1) return null;
+  return matches[0];
+}
+
 function anonymousDedupeEmail(eventId: string, p: ZoomReportParticipant, displayName: string): string {
   const join = (p.join_time ?? "").trim();
+  const day = (() => {
+    if (!join) return "";
+    const d = new Date(join);
+    if (Number.isNaN(d.getTime())) return "";
+    return d.toISOString().slice(0, 10);
+  })();
+  const normName = displayName.trim().toLowerCase().replace(/\s+/g, " ");
   const h = createHash("sha256")
-    .update(`${eventId}|${displayName}|${join}`)
+    .update(`${eventId}|${normName}|${day}`)
     .digest("hex")
     .slice(0, 28);
   return `zoom-anon-${h}@external.eventflow`;
 }
 
-async function markGuestJoinedFromReport(guestId: string, reportId: string | null): Promise<void> {
+async function markGuestJoinedFromReport(guestId: string, reportId: string | null): Promise<boolean> {
   const g = await prisma.guest.findUnique({
     where: { id: guestId },
     select: { status: true, zoomParticipantReportId: true }
   });
-  if (!g) return;
+  if (!g) return false;
 
   const nextStatus =
-    g.status === GuestStatus.INVITED || g.status === GuestStatus.REGISTERED
+    g.status === GuestStatus.INVITED ||
+    g.status === GuestStatus.REGISTERED ||
+    g.status === GuestStatus.ACCEPTED
       ? GuestStatus.JOINED
       : undefined;
 
   const attachReportId =
     reportId && !g.zoomParticipantReportId ? reportId : undefined;
 
-  if (nextStatus === undefined && attachReportId === undefined) return;
+  if (nextStatus === undefined && attachReportId === undefined) return false;
 
   await prisma.guest.update({
     where: { id: guestId },
@@ -75,6 +141,7 @@ async function markGuestJoinedFromReport(guestId: string, reportId: string | nul
       ...(attachReportId ? { zoomParticipantReportId: attachReportId } : {})
     }
   });
+  return true;
 }
 
 /**
@@ -86,11 +153,14 @@ export async function syncEventGuestsFromZoomParticipantReport(input: {
   eventId: string;
   orgId: string;
 }): Promise<SyncZoomParticipantsResult> {
+  const now = new Date();
   const event = await prisma.event.findFirst({
     where: { id: input.eventId, orgId: input.orgId },
     select: {
       id: true,
       status: true,
+      date: true,
+      endDate: true,
       zoomMeetingId: true,
       zoomSessionKind: true
     }
@@ -110,43 +180,105 @@ export async function syncEventGuestsFromZoomParticipantReport(input: {
     );
   }
 
-  const reportRows = await fetchZoomParticipantReport(
+  const {
+    participants: reportRows,
+    sessionKindUsed: reportSessionKind
+  } = await fetchZoomParticipantReportWithKindFallback(
     event.zoomSessionKind,
     event.zoomMeetingId,
-    input.orgId
+    input.orgId,
+    { startsAt: event.date, endsAt: event.endDate }
   );
+
+  if (reportSessionKind !== event.zoomSessionKind) {
+    await prisma.event.update({
+      where: { id: event.id },
+      data: { zoomSessionKind: reportSessionKind }
+    });
+  }
 
   let liveDashboardRows: ZoomReportParticipant[] = [];
   let pastDashboardRows: ZoomReportParticipant[] = [];
+  let pastOneDashboardRows: ZoomReportParticipant[] = [];
+  let dashboardLiveError: string | null = null;
+  let dashboardPastError: string | null = null;
+  let dashboardPastOneError: string | null = null;
   try {
     liveDashboardRows = await fetchZoomDashboardParticipants(
-      event.zoomSessionKind,
+      reportSessionKind,
       event.zoomMeetingId,
       input.orgId,
       "live"
     );
-  } catch {
+  } catch (e) {
+    dashboardLiveError = e instanceof Error ? e.message : String(e);
     liveDashboardRows = [];
   }
   try {
     pastDashboardRows = await fetchZoomDashboardParticipants(
-      event.zoomSessionKind,
+      reportSessionKind,
       event.zoomMeetingId,
       input.orgId,
       "past"
     );
-  } catch {
+  } catch (e) {
+    dashboardPastError = e instanceof Error ? e.message : String(e);
     pastDashboardRows = [];
   }
+  try {
+    pastOneDashboardRows = await fetchZoomDashboardParticipants(
+      reportSessionKind,
+      event.zoomMeetingId,
+      input.orgId,
+      "pastOne"
+    );
+  } catch (e) {
+    dashboardPastOneError = e instanceof Error ? e.message : String(e);
+    pastOneDashboardRows = [];
+  }
 
-  const participants = mergeZoomParticipantRows([
+  const preFilterRows = [
     ...liveDashboardRows,
     ...pastDashboardRows,
+    ...pastOneDashboardRows,
     ...reportRows
-  ]);
+  ];
 
-  const dedupeKey = (p: ZoomReportParticipant) =>
-    participantStableId(p) ?? participantEmailFromReport(p) ?? `anon:${(p.join_time ?? "").trim()}:${zoomDisplayRaw(p)}`;
+  const participants = mergeZoomParticipantRows(preFilterRows).filter((p) =>
+    participantFallsWithinEventWindow(p, event.date, event.endDate, now, event.status === EventStatus.LIVE)
+  );
+
+  if (event.status === EventStatus.LIVE && participants.length === 0) {
+    if (dashboardLiveError || dashboardPastError || dashboardPastOneError) {
+      throw new Error(
+        "No live Zoom participants returned for the current event window. Ensure your Zoom app has dashboard scope " +
+          "(dashboard_meetings:read:admin or dashboard_webinars:read:admin), then retry sync."
+      );
+    }
+    if (reportRows.length > 0) {
+      throw new Error(
+        "Zoom returned participants, but all are outside this event's live window (often from earlier test runs). " +
+          "Use a fresh Zoom meeting/webinar for the real event, or align the event schedule window, then sync again."
+      );
+    }
+  }
+
+  const dedupeKey = (p: ZoomReportParticipant) => {
+    const stable = participantStableId(p);
+    if (stable) return stable;
+    const email = participantEmailFromReport(p);
+    if (email) return email;
+    const display = zoomDisplayRaw(p).trim().toLowerCase().replace(/\s+/g, " ");
+    if (!display) return `anon:${(p.join_time ?? "").trim()}`;
+    const day = (() => {
+      const raw = (p.join_time ?? "").trim();
+      if (!raw) return "";
+      const d = new Date(raw);
+      if (Number.isNaN(d.getTime())) return "";
+      return d.toISOString().slice(0, 10);
+    })();
+    return `anon:${display}:${day}`;
+  };
 
   const seen = new Set<string>();
   const unique = participants.filter((p) => {
@@ -157,6 +289,7 @@ export async function syncEventGuestsFromZoomParticipantReport(input: {
   });
 
   let matchedUpdated = 0;
+  let matchedNoChange = 0;
   let externalCreated = 0;
   let skippedNoIdentifier = 0;
 
@@ -171,8 +304,9 @@ export async function syncEventGuestsFromZoomParticipantReport(input: {
         where: { eventId: event.id, email: emailNorm }
       });
       if (byEmail) {
-        await markGuestJoinedFromReport(byEmail.id, stableId);
-        matchedUpdated += 1;
+        const changed = await markGuestJoinedFromReport(byEmail.id, stableId);
+        if (changed) matchedUpdated += 1;
+        else matchedNoChange += 1;
         continue;
       }
     }
@@ -182,8 +316,19 @@ export async function syncEventGuestsFromZoomParticipantReport(input: {
         where: { eventId: event.id, zoomParticipantReportId: stableId }
       });
       if (byReport) {
-        await markGuestJoinedFromReport(byReport.id, stableId);
-        matchedUpdated += 1;
+        const changed = await markGuestJoinedFromReport(byReport.id, stableId);
+        if (changed) matchedUpdated += 1;
+        else matchedNoChange += 1;
+        continue;
+      }
+    }
+
+    if (!emailNorm && !stableId && rawDisplay) {
+      const byName = await findGuestByZoomDisplayName(event.id, rawDisplay);
+      if (byName) {
+        const changed = await markGuestJoinedFromReport(byName.id, null);
+        if (changed) matchedUpdated += 1;
+        else matchedNoChange += 1;
         continue;
       }
     }
@@ -200,8 +345,9 @@ export async function syncEventGuestsFromZoomParticipantReport(input: {
         where: { eventId: event.id, email: emailToStore }
       });
       if (clash) {
-        await markGuestJoinedFromReport(clash.id, null);
-        matchedUpdated += 1;
+        const changed = await markGuestJoinedFromReport(clash.id, null);
+        if (changed) matchedUpdated += 1;
+        else matchedNoChange += 1;
         continue;
       }
 
@@ -226,8 +372,9 @@ export async function syncEventGuestsFromZoomParticipantReport(input: {
       where: { eventId: event.id, email: emailToStore }
     });
     if (clash) {
-      await markGuestJoinedFromReport(clash.id, stableId);
-      matchedUpdated += 1;
+      const changed = await markGuestJoinedFromReport(clash.id, stableId);
+      if (changed) matchedUpdated += 1;
+      else matchedNoChange += 1;
       continue;
     }
 
@@ -251,7 +398,9 @@ export async function syncEventGuestsFromZoomParticipantReport(input: {
     reportRows: reportRows.length,
     liveDashboardRows: liveDashboardRows.length,
     pastDashboardRows: pastDashboardRows.length,
+    pastOneDashboardRows: pastOneDashboardRows.length,
     matchedUpdated,
+    matchedNoChange,
     externalCreated,
     skippedNoIdentifier
   };

@@ -10,6 +10,7 @@ import { z } from "zod";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import {
+  testGoogleMapsIntegration,
   testMnotifyIntegration,
   testResendIntegration,
   testWhatsappIntegration,
@@ -17,21 +18,23 @@ import {
   type IntegrationHealth
 } from "@/lib/actions/integration.actions";
 import {
+  updateOrganizationGoogleMapsFields,
   updateOrganizationMnotifyFields,
   updateOrganizationResendFields,
   updateOrganizationWhatsappFields,
-  updateOrganizationZoomFields
+  updateOrganizationZoomOauthFields
 } from "@/lib/actions/settings.actions";
 import { cn } from "@/lib/utils";
 
-const INTEGRATIONS = ["zoom", "whatsapp", "resend", "mnotify"] as const;
+const INTEGRATIONS = ["zoom", "whatsapp", "resend", "mnotify", "google_maps"] as const;
 type IntegrationId = (typeof INTEGRATIONS)[number];
 
 const INTEGRATION_LABELS: Record<IntegrationId, string> = {
   zoom: "Zoom",
   whatsapp: "WhatsApp",
   resend: "Resend",
-  mnotify: "mNotify SMS"
+  mnotify: "mNotify SMS",
+  google_maps: "Google Maps"
 };
 
 function integrationHref(tab: IntegrationId) {
@@ -52,13 +55,13 @@ function HealthBadge({ status }: { status: IntegrationHealth | null }) {
   );
 }
 
-const zoomSchema = z.object({
+const zoomOauthSchema = z.object({
   zoomClientId: z.string().max(500).optional(),
   zoomClientSecret: z.string().max(500).optional(),
   zoomAccountId: z.string().max(500).optional()
 });
 
-type ZoomFormValues = z.infer<typeof zoomSchema>;
+type ZoomOauthFormValues = z.infer<typeof zoomOauthSchema>;
 
 type ZoomPanelProps = {
   defaultZoomClientId: string | null;
@@ -72,8 +75,8 @@ function ZoomPanel({ defaultZoomClientId, defaultZoomAccountId, hasStoredZoomSec
   const [detail, setDetail] = useState<string | null>(null);
   const [testing, setTesting] = useState(false);
 
-  const form = useForm<ZoomFormValues>({
-    resolver: zodResolver(zoomSchema),
+  const form = useForm<ZoomOauthFormValues>({
+    resolver: zodResolver(zoomOauthSchema),
     defaultValues: {
       zoomClientId: defaultZoomClientId ?? "",
       zoomClientSecret: "",
@@ -95,8 +98,8 @@ function ZoomPanel({ defaultZoomClientId, defaultZoomAccountId, hasStoredZoomSec
     setDetail(res.data.detail ?? null);
   }
 
-  async function onSubmit(values: ZoomFormValues) {
-    const res = await updateOrganizationZoomFields({
+  async function onSubmit(values: ZoomOauthFormValues) {
+    const res = await updateOrganizationZoomOauthFields({
       zoomClientId: values.zoomClientId?.trim() || null,
       zoomClientSecret: values.zoomClientSecret?.trim() || null,
       zoomAccountId: values.zoomAccountId?.trim() || null
@@ -105,9 +108,34 @@ function ZoomPanel({ defaultZoomClientId, defaultZoomAccountId, hasStoredZoomSec
       form.setError("root", { message: res.error ?? "Failed to save" });
       return;
     }
-    form.reset({ ...values, zoomClientSecret: "" });
+    form.reset({
+      zoomClientId: values.zoomClientId?.trim() ?? "",
+      zoomAccountId: values.zoomAccountId?.trim() ?? "",
+      zoomClientSecret: ""
+    });
     router.refresh();
   }
+
+  async function onClear() {
+    const res = await updateOrganizationZoomOauthFields({
+      zoomClientId: null,
+      zoomClientSecret: null,
+      zoomAccountId: null
+    });
+    if (!res.success) {
+      form.setError("root", { message: res.error ?? "Failed to remove credentials" });
+      return;
+    }
+    form.reset({ zoomClientId: "", zoomClientSecret: "", zoomAccountId: "" });
+    setHealth(null);
+    setDetail(null);
+    router.refresh();
+  }
+
+  const hasStored =
+    Boolean(defaultZoomClientId?.trim()) ||
+    Boolean(defaultZoomAccountId?.trim()) ||
+    hasStoredZoomSecret;
 
   return (
     <div className="space-y-4">
@@ -115,8 +143,8 @@ function ZoomPanel({ defaultZoomClientId, defaultZoomAccountId, hasStoredZoomSec
         <div>
           <h3 className="text-sm font-semibold text-slate-900">Zoom</h3>
           <p className="mt-1 text-xs text-slate-600">
-            Server-to-Server OAuth. Used when events create Zoom webinars. Empty fields fall back to server
-            environment variables.
+            Server-to-Server OAuth for creating Zoom meetings and webinars. Hosts start sessions from the event page
+            using the Zoom app link. Empty fields fall back to server environment variables.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -139,10 +167,12 @@ function ZoomPanel({ defaultZoomClientId, defaultZoomAccountId, hasStoredZoomSec
             type="password"
             {...form.register("zoomClientSecret")}
             autoComplete="new-password"
-            placeholder={hasStoredZoomSecret ? "Leave blank to keep the saved secret" : ""}
+            placeholder={hasStoredZoomSecret ? "Leave blank and save to clear the stored secret" : ""}
           />
           {hasStoredZoomSecret ? (
-            <p className="mt-1 text-xs text-slate-500">A secret is already stored. Enter a new value only to replace it.</p>
+            <p className="mt-1 text-xs text-slate-500">
+              A secret is stored. Enter a new value to replace it, or save with an empty field to remove it.
+            </p>
           ) : null}
         </div>
         <div>
@@ -152,9 +182,21 @@ function ZoomPanel({ defaultZoomClientId, defaultZoomAccountId, hasStoredZoomSec
         {form.formState.errors.root ? (
           <p className="text-sm text-red-600">{form.formState.errors.root.message}</p>
         ) : null}
-        <Button type="submit" disabled={form.formState.isSubmitting}>
-          {form.formState.isSubmitting ? "Saving…" : "Save Zoom"}
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button type="submit" disabled={form.formState.isSubmitting}>
+            {form.formState.isSubmitting ? "Saving…" : "Save Zoom"}
+          </Button>
+          {hasStored ? (
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={form.formState.isSubmitting}
+              onClick={() => void onClear()}
+            >
+              Remove stored credentials
+            </Button>
+          ) : null}
+        </div>
       </form>
     </div>
   );
@@ -372,7 +414,8 @@ function ResendPanel({ hasStoredResendKey }: ResendPanelProps) {
 const mnotifySchema = z.object({
   mnotifyEnabled: z.preprocess((val) => val === true || val === "on", z.boolean()),
   mnotifyApiKey: z.string().max(500).optional(),
-  mnotifySenderId: z.string().max(11).optional()
+  mnotifySenderId: z.string().max(11).optional(),
+  clearMnotifyApiKey: z.boolean().optional()
 });
 
 type MnotifyFormValues = z.infer<typeof mnotifySchema>;
@@ -380,10 +423,16 @@ type MnotifyFormValues = z.infer<typeof mnotifySchema>;
 type MnotifyPanelProps = {
   defaultMnotifyEnabled: boolean;
   defaultMnotifySenderId: string | null;
+  mnotifyDefaultSenderId: string;
   hasStoredMnotifyKey: boolean;
 };
 
-function MnotifyPanel({ defaultMnotifyEnabled, defaultMnotifySenderId, hasStoredMnotifyKey }: MnotifyPanelProps) {
+function MnotifyPanel({
+  defaultMnotifyEnabled,
+  defaultMnotifySenderId,
+  mnotifyDefaultSenderId,
+  hasStoredMnotifyKey
+}: MnotifyPanelProps) {
   const router = useRouter();
   const [health, setHealth] = useState<IntegrationHealth | null>(null);
   const [detail, setDetail] = useState<string | null>(null);
@@ -394,7 +443,8 @@ function MnotifyPanel({ defaultMnotifyEnabled, defaultMnotifySenderId, hasStored
     defaultValues: {
       mnotifyEnabled: defaultMnotifyEnabled,
       mnotifyApiKey: "",
-      mnotifySenderId: defaultMnotifySenderId ?? ""
+      mnotifySenderId: defaultMnotifySenderId ?? "",
+      clearMnotifyApiKey: false
     }
   });
 
@@ -410,6 +460,7 @@ function MnotifyPanel({ defaultMnotifyEnabled, defaultMnotifySenderId, hasStored
     }
     setHealth(res.data.status);
     setDetail(res.data.detail ?? null);
+    router.refresh();
   }
 
   async function onSubmit(values: MnotifyFormValues) {
@@ -417,13 +468,14 @@ function MnotifyPanel({ defaultMnotifyEnabled, defaultMnotifySenderId, hasStored
     const res = await updateOrganizationMnotifyFields({
       mnotifyEnabled: values.mnotifyEnabled,
       mnotifySenderId: values.mnotifySenderId?.trim().slice(0, 11) || null,
+      clearMnotifyApiKey: values.clearMnotifyApiKey === true,
       ...(key.length > 0 ? { mnotifyApiKey: key } : {})
     });
     if (!res.success) {
       form.setError("root", { message: res.error ?? "Failed to save" });
       return;
     }
-    form.reset({ ...values, mnotifyApiKey: "" });
+    form.reset({ ...values, mnotifyApiKey: "", clearMnotifyApiKey: false });
     router.refresh();
   }
 
@@ -442,8 +494,13 @@ function MnotifyPanel({ defaultMnotifyEnabled, defaultMnotifySenderId, hasStored
             >
               mNotify API
             </a>
-            . Sends use the Quick SMS endpoint (no OTP payload). Optional server fallback:{" "}
-            <code className="rounded bg-slate-100 px-1 text-[11px]">MNOTIFY_API_KEY</code>.
+            . Sends use the Quick SMS endpoint (no OTP payload). If you do not save an org API key or sender ID, the
+            server uses <code className="rounded bg-slate-100 px-1 text-[11px]">MNOTIFY_API_KEY</code> and{" "}
+            <code className="rounded bg-slate-100 px-1 text-[11px]">MNOTIFY_DEFAULT_SENDER_ID</code>             (
+            <span className="font-mono">
+              {mnotifyDefaultSenderId.length >= 3 ? mnotifyDefaultSenderId : "(not set — add to server .env)"}
+            </span>
+            ) from the environment.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -461,8 +518,21 @@ function MnotifyPanel({ defaultMnotifyEnabled, defaultMnotifySenderId, hasStored
           Enable mNotify SMS (reminders, cancellations)
         </label>
         <div>
-          <label className="mb-1 block text-sm font-medium text-slate-700">Sender ID (max 11 characters)</label>
-          <Input {...form.register("mnotifySenderId")} autoComplete="off" maxLength={11} placeholder="YourBrand" />
+          <label className="mb-1 block text-sm font-medium text-slate-700">Sender ID (max 11 characters, optional)</label>
+          <Input
+            {...form.register("mnotifySenderId")}
+            autoComplete="off"
+            maxLength={11}
+            placeholder="Override mNotify sender for this workspace"
+          />
+          <p className="mt-1 text-xs text-slate-500">
+            If left blank, Quick SMS uses{" "}
+            <code className="text-[11px]">MNOTIFY_DEFAULT_SENDER_ID</code> from the server (currently{" "}
+            <span className="font-mono">
+              {mnotifyDefaultSenderId.length >= 3 ? mnotifyDefaultSenderId : "not set"}
+            </span>
+            ).
+          </p>
         </div>
         <div>
           <label className="mb-1 block text-sm font-medium text-slate-700">API key</label>
@@ -475,6 +545,13 @@ function MnotifyPanel({ defaultMnotifyEnabled, defaultMnotifySenderId, hasStored
           {hasStoredMnotifyKey ? (
             <p className="mt-1 text-xs text-slate-500">A key is already stored. Enter a new value only to replace it.</p>
           ) : null}
+          <label className="mt-3 flex cursor-pointer items-start gap-2 text-sm text-slate-700">
+            <input type="checkbox" className="mt-0.5 rounded border-slate-300" {...form.register("clearMnotifyApiKey")} />
+            <span>
+              Remove saved organization API key and use the server default{" "}
+              <code className="rounded bg-slate-100 px-1 text-[11px]">MNOTIFY_API_KEY</code> instead.
+            </span>
+          </label>
         </div>
         {form.formState.errors.root ? (
           <p className="text-sm text-red-600">{form.formState.errors.root.message}</p>
@@ -482,6 +559,105 @@ function MnotifyPanel({ defaultMnotifyEnabled, defaultMnotifySenderId, hasStored
         <Button type="submit" disabled={form.formState.isSubmitting}>
           {form.formState.isSubmitting ? "Saving…" : "Save mNotify"}
         </Button>
+      </form>
+    </div>
+  );
+}
+
+const googleMapsSchema = z.object({
+  googleMapsApiKey: z.string().max(500).optional()
+});
+
+type GoogleMapsFormValues = z.infer<typeof googleMapsSchema>;
+
+type GoogleMapsPanelProps = {
+  hasStoredGoogleMapsKey: boolean;
+};
+
+function GoogleMapsPanel({ hasStoredGoogleMapsKey }: GoogleMapsPanelProps) {
+  const router = useRouter();
+  const [health, setHealth] = useState<IntegrationHealth | null>(null);
+  const [detail, setDetail] = useState<string | null>(null);
+  const [testing, setTesting] = useState(false);
+
+  const form = useForm<GoogleMapsFormValues>({
+    resolver: zodResolver(googleMapsSchema),
+    defaultValues: { googleMapsApiKey: "" }
+  });
+
+  async function onTest() {
+    setTesting(true);
+    setDetail(null);
+    const res = await testGoogleMapsIntegration();
+    setTesting(false);
+    if (!res.success || !res.data) {
+      setHealth("action_required");
+      setDetail(res.error ?? "Test failed");
+      return;
+    }
+    setHealth(res.data.status);
+    setDetail(res.data.detail ?? null);
+  }
+
+  async function onSubmit(values: GoogleMapsFormValues) {
+    const key = values.googleMapsApiKey?.trim() ?? "";
+    const res = await updateOrganizationGoogleMapsFields({
+      googleMapsApiKey: key.length > 0 ? key : null
+    });
+    if (!res.success) {
+      form.setError("root", { message: res.error ?? "Failed to save" });
+      return;
+    }
+    form.reset({ googleMapsApiKey: "" });
+    router.refresh();
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold text-slate-900">Google Maps Platform</h3>
+          <p className="mt-1 text-xs text-slate-600">
+            API key for{" "}
+            <strong>Places Autocomplete</strong>, <strong>Place Details</strong>, and <strong>Static Maps</strong> used
+            when admins create venues from the event form. Restrict the key by HTTP referrer and enable only those APIs.
+            Optional fallback: <code className="rounded bg-slate-100 px-1 text-[11px]">GOOGLE_MAPS_API_KEY</code> on the
+            server.
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <HealthBadge status={health} />
+          <Button type="button" variant="secondary" disabled={testing} onClick={() => void onTest()}>
+            {testing ? "Testing…" : "Test Places"}
+          </Button>
+        </div>
+      </div>
+      {detail ? <p className="text-xs text-slate-600">{detail}</p> : null}
+
+      <form onSubmit={form.handleSubmit(onSubmit)} className="max-w-xl space-y-4">
+        <div>
+          <label className="mb-1 block text-sm font-medium text-slate-700">API key</label>
+          <Input
+            type="password"
+            {...form.register("googleMapsApiKey")}
+            autoComplete="off"
+            placeholder={hasStoredGoogleMapsKey ? "Leave blank and save to clear the stored key" : ""}
+          />
+          {hasStoredGoogleMapsKey ? (
+            <p className="mt-1 text-xs text-slate-500">
+              A key is already stored. Enter a new key to replace it, or save with an empty field to remove it from the
+              organization (server env fallback still works).
+            </p>
+          ) : null}
+        </div>
+        {form.formState.errors.root ? (
+          <p className="text-sm text-red-600">{form.formState.errors.root.message}</p>
+        ) : null}
+        <div className="flex flex-wrap gap-2">
+          <Button type="submit" disabled={form.formState.isSubmitting}>
+            {form.formState.isSubmitting ? "Saving…" : "Save Google Maps key"}
+          </Button>
+        </div>
       </form>
     </div>
   );
@@ -497,7 +673,9 @@ export type IntegrationsHubProps = {
   hasStoredResendKey: boolean;
   mnotifyEnabled: boolean;
   mnotifySenderId: string | null;
+  mnotifyDefaultSenderId: string;
   hasStoredMnotifyKey: boolean;
+  hasStoredGoogleMapsKey: boolean;
 };
 
 export function IntegrationsHub({
@@ -510,7 +688,9 @@ export function IntegrationsHub({
   hasStoredResendKey,
   mnotifyEnabled,
   mnotifySenderId,
-  hasStoredMnotifyKey
+  mnotifyDefaultSenderId,
+  hasStoredMnotifyKey,
+  hasStoredGoogleMapsKey
 }: IntegrationsHubProps) {
   const searchParams = useSearchParams();
   const raw = searchParams.get("integration") ?? "zoom";
@@ -560,9 +740,11 @@ export function IntegrationsHub({
         <MnotifyPanel
           defaultMnotifyEnabled={mnotifyEnabled}
           defaultMnotifySenderId={mnotifySenderId}
+          mnotifyDefaultSenderId={mnotifyDefaultSenderId}
           hasStoredMnotifyKey={hasStoredMnotifyKey}
         />
       ) : null}
+      {active === "google_maps" ? <GoogleMapsPanel hasStoredGoogleMapsKey={hasStoredGoogleMapsKey} /> : null}
     </div>
   );
 }

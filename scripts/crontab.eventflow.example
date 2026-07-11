@@ -1,0 +1,26 @@
+# Example crontab entries for Eventflow (Plesk: Domains → eventflow… → Scheduled Tasks).
+# Replace YOUR_CRON_SECRET with the CRON_SECRET value from .env (must match exactly).
+#
+# Generate a new secret anytime:
+#   openssl rand -hex 32
+#
+# Install: crontab -e  (or paste into Plesk scheduled task UI)
+
+SHELL=/bin/bash
+PATH=/usr/local/bin:/usr/bin:/bin
+
+# Event reminders + live event status (existing)
+0 * * * * curl -fsS -H "Authorization: Bearer YOUR_CRON_SECRET" "https://eventflow.cosabonita.tech/api/cron/reminders" >/dev/null
+*/15 * * * * curl -fsS -H "Authorization: Bearer YOUR_CRON_SECRET" "https://eventflow.cosabonita.tech/api/cron/event-status" >/dev/null
+
+# Zoom participant sync (if used)
+# */10 * * * * curl -fsS -H "Authorization: Bearer YOUR_CRON_SECRET" "https://eventflow.cosabonita.tech/api/cron/zoom-participant-sync" >/dev/null
+
+# Broadcast send worker (when MODULE_BROADCAST_ENABLED=true)
+# */5 * * * * curl -fsS -H "Authorization: Bearer YOUR_CRON_SECRET" "https://eventflow.cosabonita.tech/api/cron/broadcast-send" >/dev/null
+
+# Billing — trial expiry, cancel-at-period-end, trial reminder emails (daily 06:00 UTC)
+0 6 * * * curl -fsS -H "Authorization: Bearer YOUR_CRON_SECRET" "https://eventflow.cosabonita.tech/api/cron/billing/lifecycle" >/dev/null
+
+# Billing — dunning charge retries (every 6 hours)
+0 */6 * * * curl -fsS -H "Authorization: Bearer YOUR_CRON_SECRET" "https://eventflow.cosabonita.tech/api/cron/billing/dunning" >/dev/null

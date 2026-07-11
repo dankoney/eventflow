@@ -70,6 +70,12 @@ export function LoginForm({ callbackUrl }: LoginFormProps) {
     });
 
     if (result?.error) {
+      if (result.code === "workspace_not_activated") {
+        setFormError(
+          "This workspace is not activated yet. Open the activation link from your welcome email, or ask your platform admin to resend it."
+        );
+        return;
+      }
       setFormError("Invalid or expired code. Request a new code from the previous step.");
       return;
     }

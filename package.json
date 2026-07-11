@@ -3,22 +3,31 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "postinstall": "prisma generate",
+    "postinstall": "prisma generate && cp node_modules/@maily-to/core/dist/index.css public/vendor/maily-editor.css 2>/dev/null || true",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "start:plesk": "node server.js",
     "lint": "next lint",
     "prisma:generate": "prisma generate",
-    "prisma:migrate": "prisma migrate dev"
+    "prisma:migrate": "prisma migrate dev",
+    "test:resend-webhook": "node scripts/test-resend-unsubscribe-webhook.mjs",
+    "test:resend-webhook:direct": "tsx scripts/test-resend-unsubscribe-direct.ts",
+    "test:billing:sandbox": "tsx scripts/test-billing-sandbox.ts"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.10.0",
     "@hookform/resolvers": "^3.9.1",
+    "@maily-to/core": "^0.3.7",
+    "@maily-to/render": "^0.2.3",
     "@prisma/client": "^6.6.0",
+    "@zoom/meetingsdk": "^6.0.2",
     "bcryptjs": "^2.4.3",
     "clsx": "^2.1.1",
+    "flag-icons": "^7.5.0",
     "idb": "^8.0.3",
+    "jspdf": "^4.2.1",
+    "jspdf-autotable": "^5.0.8",
     "jsqr": "^1.4.0",
     "lucide-react": "^0.468.0",
     "next": "^14.2.0",
@@ -28,11 +37,18 @@
     "react-datepicker": "^7.6.0",
     "react-dom": "^18.3.1",
     "react-hook-form": "^7.53.2",
+    "react-is": "^18.3.1",
     "recharts": "^3.8.1",
+    "server-only": "^0.0.1",
+    "svix": "^1.96.1",
     "tailwind-merge": "^2.5.4",
+    "xlsx": "^0.18.5",
+    "y-protocols": "^1.0.7",
+    "yjs": "^13.6.31",
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@tiptap/core": "^3.27.2",
     "@types/bcryptjs": "^2.4.6",
     "@types/node": "^22.7.4",
     "@types/qrcode": "^1.5.6",
@@ -43,6 +59,7 @@
     "postcss": "^8.4.47",
     "prisma": "^6.6.0",
     "tailwindcss": "^3.4.14",
+    "tsx": "^4.23.0",
     "typescript": "^5.6.2"
   }
 }

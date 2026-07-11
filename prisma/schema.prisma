@@ -11,130 +11,926 @@ datasource db {
 }
 
 model Organization {
-  id                  String     @id @default(cuid())
-  name                String
-  slug                String     @unique
-  logo                String?
-  zoomClientId        String?
-  zoomClientSecret    String?
-  zoomAccountId       String?
-  whatsappEnabled     Boolean    @default(false)
-  whatsappAccessToken String?    @db.Text
-  whatsappPhoneNumberId String?
-  resendApiKey        String?    @db.Text
-  /** mNotify (Ghana) — Quick SMS; https://api.mnotify.com */
-  mnotifyEnabled      Boolean    @default(false)
-  mnotifyApiKey       String?    @db.Text
-  /** Registered sender ID (max 11 characters on mNotify). */
-  mnotifySenderId     String?
-  createdAt           DateTime   @default(now())
-  events              Event[]
-  users               User[]
-  locations           Location[]
+  id                             String                        @id @default(cuid())
+  name                           String
+  slug                           String                        @unique
+  logo                           String?
+  /**
+   * Broadcast / marketing email branding (org-wide). Falls back to `logo` when unset.
+   */
+  logoUrl                        String?
+  /**
+   * Primary brand color for broadcast templates (buttons, header band). Default indigo.
+   */
+  primaryColor                   String                        @default("#4F46E5")
+  /**
+   * Optional accent for highlights; defaults to primary at send time when unset.
+   */
+  accentColor                    String?
+  /**
+   * Feature tier (FREE / PRO / ENTERPRISE) — what product capabilities the org
+   * may use right now. Billing relationship state lives on Subscription.status;
+   * feature gating must use getOrgBillingAccess() / orgCan(), not plan alone.
+   */
+  plan                           OrgPlan                       @default(FREE)
+  /**
+   * Set when the admin clicks the activation link in their welcome email.
+   * Sign-in is blocked while this is null so a provisioned-but-unverified org
+   * can't be used. Cleared again (back to null) ONLY by a platform owner — there
+   * is no UI for self-deactivation.
+   */
+  activatedAt                    DateTime?
+  /**
+   * Audit pointer to the platform owner that minted this workspace. Null on the
+   * very first org (bootstrapped via /setup) and any org migrated in by hand.
+   */
+  provisionedById                String?
+  provisionedBy                  User?                         @relation("PlatformOwnerProvisionedOrgs", fields: [provisionedById], references: [id], onDelete: SetNull)
+  activationTokens               OrgActivationToken[]
+  zoomClientId                   String?
+  zoomClientSecret               String?
+  zoomAccountId                  String?
+  /**
+   * Zoom Meeting SDK app credentials (Marketplace → Meeting SDK). Used for in-app host
+   * launch (JWT signature). Separate from Server-to-Server OAuth above.
+   */
+  zoomMeetingSdkKey              String?
+  zoomMeetingSdkSecret           String?                       @db.Text
+  whatsappEnabled                Boolean                       @default(false)
+  whatsappAccessToken            String?                       @db.Text
+  whatsappPhoneNumberId          String?
+  resendApiKey                   String?                       @db.Text
+  /**
+   * mNotify (Ghana) — Quick SMS; https://api.mnotify.com
+   */
+  mnotifyEnabled                 Boolean                       @default(false)
+  mnotifyApiKey                  String?                       @db.Text
+  /**
+   * Registered sender ID (max 11 characters on mNotify).
+   */
+  mnotifySenderId                String?
+  /**
+   * Default public registration / attendee branding for new events (wizard & classic create).
+   */
+  defaultEventBannerImageUrl     String?
+  defaultEventBrandLogoUrl       String?
+  defaultEventAttendeeTheme      AttendeeTheme                 @default(SYSTEM)
+  defaultEventPublicPageTemplate PublicPageTemplate            @default(SUMMIT)
+  defaultEventBrandPrimaryColor  String?
+  defaultEventBrandSecondaryColor String?
+  defaultEventBrandTertiaryColor  String?
+  /**
+   * Default virtual seat count when virtual is enabled on a new event.
+   */
+  defaultEventVirtualCapacity    Int                           @default(100)
+  defaultZoomSessionKind         ZoomSessionKind               @default(MEETING)
+  /**
+   * Google Maps Platform API key (Places, Static Maps). Optional; falls back to GOOGLE_MAPS_API_KEY on server.
+   */
+  googleMapsApiKey               String?                       @db.Text
+  /**
+   * Preset contact category labels (string[]) for directory + audience filters; JSON array.
+   */
+  contactCategoryLabels          Json?
+  /**
+   * Shown on internal staff registration self check-in footer (e.g. \"MIS Department\").
+   */
+  internalStaffFooterContact     String?
+  /**
+   * When true, RSVP and public registration may show an optional marketing opt-in.
+   */
+  marketingEmailEnabled          Boolean                       @default(false)
+  /**
+   * Checkbox label shown to guests; supports {orgName} placeholder.
+   */
+  marketingConsentCopy           String?                       @db.Text
+  /**
+   * Linked from the marketing opt-in checkbox (https URL).
+   */
+  marketingPrivacyPolicyUrl      String?
+  /**
+   * Optional legal/company name for payment receipts (falls back to `name`).
+   */
+  billingLegalName               String?
+  billingAddressLine1            String?
+  billingAddressLine2            String?
+  billingCity                    String?
+  billingRegion                  String?
+  billingPostalCode              String?
+  billingCountry                 String?
+  createdAt                      DateTime                      @default(now())
+  events                         Event[]
+  users                          User[]
+  locations                      Location[]
+  orgContacts                    OrgContact[]
+  crmContactGroups               OrgContactGroup[]
+  feedbackQuestionTemplates      OrgFeedbackQuestionTemplate[]
+  mediaAssets                    MediaAsset[]
+  emailTemplates                 EmailTemplate[]
+  emailCampaigns                 EmailCampaign[]
+  billingCustomer                BillingCustomer?
+  subscription                   Subscription?
+  billingInvoices                BillingInvoice[]
+  paymentEvents                  PaymentEvent[]
+  manualBillingActions           ManualBillingAction[]
+}
+
+/**
+ * Central media library — org-scoped images, videos, and documents.
+ */
+model MediaAsset {
+  id               String         @id @default(cuid())
+  orgId            String
+  org              Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  uploadedByUserId String?
+  uploadedBy       User?          @relation(fields: [uploadedByUserId], references: [id], onDelete: SetNull)
+  title            String
+  originalName     String
+  mimeType         String
+  sizeBytes        Int
+  kind             MediaAssetKind
+  storagePath      String
+  publicUrl        String
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  @@index([orgId, createdAt])
+  @@index([orgId, kind])
+}
+
+/**
+ * Reusable optional-question sets for post-event guest feedback (per organization).
+ */
+model OrgFeedbackQuestionTemplate {
+  id          String       @id @default(cuid())
+  orgId       String
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  name        String
+  description String?      @db.Text
+  /**
+   * JSON array: [{ key: string, prompt: string }]
+   */
+  questions   Json
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  @@unique([orgId, name])
+  @@index([orgId])
+}
+
+/**
+ * Organization-wide CRM record: people & org-facing stakeholders; guests link via contactId.
+ */
+model OrgContact {
+  id               String                  @id @default(cuid())
+  orgId            String
+  org              Organization            @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  name             String
+  /**
+   * Lowercased work email; unique per organization.
+   */
+  email            String
+  /**
+   * E.164 or normalized digits; unique per organization.
+   */
+  phone            String
+  /**
+   * Optional org-issued identifier (badge, employee ref, or external key).
+   */
+  staffEmployeeId  String?
+  company          String?
+  jobTitle         String?
+  department       String?
+  branch           String?
+  category         String?
+  rank             String?
+  employmentStatus StaffEmploymentStatus   @default(PERMANENT)
+  dateJoined       DateTime                @default(now())
+  hasWhatsapp      Boolean                 @default(false)
+  userId           String?                 @unique
+  user             User?                   @relation("OrgContactToUser", fields: [userId], references: [id], onDelete: SetNull)
+  guests           Guest[]
+  /**
+   * CRM classification (attendee, stakeholder, sponsor, …).
+   */
+  crmKind          CrmContactKind          @default(OTHER)
+  /**
+   * Pipeline / relationship stage (free text; e.g. prospect, active, alumni).
+   */
+  lifecycleStage   String?                 @db.VarChar(48)
+  /**
+   * Rich notes for relationship context.
+   */
+  notes            String?                 @db.Text
+  /**
+   * JSON string[] — segments / topics (max length enforced in app).
+   */
+  tags             Json?
+  linkedinUrl      String?                 @db.VarChar(512)
+  website          String?                 @db.VarChar(512)
+  /**
+   * How this record entered the CRM: manual, import_csv, sync_guest, registration, …
+   */
+  source           String?                 @db.VarChar(120)
+  groupMembers     OrgContactGroupMember[]
+  createdAt        DateTime                @default(now())
+  updatedAt        DateTime                @updatedAt
+
+  @@unique([orgId, email])
+  @@unique([orgId, phone])
+  @@index([orgId])
+  @@index([orgId, crmKind])
+}
+
+/**
+ * Segments / lists for campaigns and internal audience (many contacts per group).
+ */
+model OrgContactGroup {
+  id          String                  @id @default(cuid())
+  orgId       String
+  org         Organization            @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  name        String
+  description String?                 @db.Text
+  /**
+   * Optional UI chip color (#RRGGBB).
+   */
+  color       String?                 @db.VarChar(7)
+  members     OrgContactGroupMember[]
+  createdAt   DateTime                @default(now())
+  updatedAt   DateTime                @updatedAt
+
+  @@index([orgId])
+}
+
+model OrgContactGroupMember {
+  id        String          @id @default(cuid())
+  groupId   String
+  group     OrgContactGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  contactId String
+  contact   OrgContact      @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  createdAt DateTime        @default(now())
+
+  @@unique([groupId, contactId])
+  @@index([contactId])
 }
 
 model Location {
-  id        String   @id @default(cuid())
-  name      String
-  address   String
-  capacity  Int
-  orgId     String
-  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  events    Event[]
-  createdAt DateTime @default(now())
+  id               String       @id @default(cuid())
+  name             String
+  address          String
+  capacity         Int
+  /**
+   * Locality for venue search (e.g. from Places).
+   */
+  city             String?
+  latitude         Float?
+  longitude        Float?
+  googlePlaceId    String?
+  /**
+   * Public URL path (e.g. /uploads/venues/…) shown on registration.
+   */
+  facilityImageUrl String?
+  orgId            String
+  org              Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  events           Event[]
+  createdAt        DateTime     @default(now())
 }
 
 model User {
-  id            String       @id @default(cuid())
-  name          String?
-  email         String       @unique
-  emailVerified DateTime?
-  image         String?
-  role          Role         @default(STAFF)
-  orgId         String
-  org           Organization @relation(fields: [orgId], references: [id])
-  accounts      Account[]
-  sessions      Session[]
-  createdAt     DateTime     @default(now())
+  id                     String                  @id @default(cuid())
+  name                   String?
+  email                  String                  @unique
+  emailVerified          DateTime?
+  image                  String?
+  role                   Role                    @default(STAFF)
+  orgId                  String
+  org                    Organization            @relation(fields: [orgId], references: [id])
+  /**
+   * Platform-level superadmin flag. Orthogonal to the org-scoped {@link Role}:
+   * a platform owner is still ADMIN of *their* workspace, but additionally has
+   * access to /superadmin (provision new orgs, see all workspaces). Flipped on
+   * the seed user by the `20260511200000_platform_org_provisioning` migration;
+   * managed manually thereafter (no UI).
+   */
+  isPlatformOwner        Boolean                 @default(false)
+  accounts               Account[]
+  sessions               Session[]
+  linkedOrgContact       OrgContact?             @relation("OrgContactToUser")
+  provisionedOrgs        Organization[]          @relation("PlatformOwnerProvisionedOrgs")
+  activationTokens       OrgActivationToken[]
+  guestMessageCampaigns  GuestMessageCampaign[]
+  eventFeedbackCampaigns EventFeedbackCampaign[]
+  eventsCreated          Event[]                 @relation("EventCreatedBy")
+  eventTeamMemberships   EventTeamMember[]
+  guestsCreated          Guest[]                 @relation("GuestCreatedBy")
+  uploadedMediaAssets    MediaAsset[]
+  emailTemplatesCreated  EmailTemplate[]         @relation("EmailTemplateCreatedBy")
+  emailCampaignsCreated  EmailCampaign[]         @relation("EmailCampaignCreatedBy")
+  manualBillingActions   ManualBillingAction[]   @relation("ManualBillingActionActor")
+  createdAt              DateTime                @default(now())
+}
+
+/**
+ * Post-event feedback request blast to checked-in / joined guests.
+ */
+model EventFeedbackCampaign {
+  id               String                  @id @default(cuid())
+  eventId          String
+  event            Event                   @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  createdByUserId  String
+  createdBy        User                    @relation(fields: [createdByUserId], references: [id], onDelete: Restrict)
+  recipientCount   Int                     @default(0)
+  sentCount        Int                     @default(0)
+  failedCount      Int                     @default(0)
+  skippedCount     Int                     @default(0)
+  /**
+   * Guest ids targeted by this blast (for scoped follow-up metrics).
+   */
+  audienceGuestIds Json?
+  responses        EventFeedbackResponse[]
+  createdAt        DateTime                @default(now())
+
+  @@index([eventId, createdAt])
+}
+
+/**
+ * One emoji rating per guest per event (updated if they submit again).
+ */
+model EventFeedbackResponse {
+  id                   String                 @id @default(cuid())
+  eventId              String
+  event                Event                  @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  guestId              String?
+  guest                Guest?                 @relation(fields: [guestId], references: [id], onDelete: Cascade)
+  /**
+   * Set for anonymous portal submissions (`/feedback/anon/...`).
+   */
+  portalAnonymousToken String?                @unique
+  campaignId           String?
+  campaign             EventFeedbackCampaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  rating               EventFeedbackRating
+  comment              String?                @db.Text
+  /**
+   * Map of organizer feedback question key -> guest-provided answer.
+   * Stored as JSON to avoid extra tables.
+   */
+  answers              Json?
+  /**
+   * When true, organizers see this response without the guest name (guestId may still be set for tracking).
+   */
+  submittedAnonymously Boolean                @default(false)
+  createdAt            DateTime               @default(now())
+  updatedAt            DateTime               @updatedAt
+
+  @@unique([eventId, guestId])
+  @@index([eventId, rating])
+}
+
+/**
+ * Organizer-initiated custom SMS or email to one guest or a blast to many.
+ */
+model GuestMessageCampaign {
+  id                String                    @id @default(cuid())
+  eventId           String
+  event             Event                     @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  createdByUserId   String
+  createdBy         User                      @relation(fields: [createdByUserId], references: [id], onDelete: Restrict)
+  channel           GuestMessageChannel
+  scope             GuestMessageCampaignScope @default(SINGLE)
+  templateSubject   String?
+  templateHeadline  String?
+  templateBody      String                    @db.Text
+  recipientCount    Int                       @default(0)
+  sentCount         Int                       @default(0)
+  failedCount       Int                       @default(0)
+  skippedCount      Int                       @default(0)
+  mnotifyCampaignId String?
+  deliveries        GuestMessageDelivery[]
+  createdAt         DateTime                  @default(now())
+
+  @@index([eventId, createdAt])
+}
+
+model GuestMessageDelivery {
+  id         String                     @id @default(cuid())
+  campaignId String
+  campaign   GuestMessageCampaign       @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  guestId    String
+  guest      Guest                      @relation(fields: [guestId], references: [id], onDelete: Cascade)
+  status     GuestMessageDeliveryStatus
+  error      String?                    @db.Text
+  sentAt     DateTime?
+  createdAt  DateTime                   @default(now())
+
+  @@index([campaignId])
+  @@index([guestId])
+}
+
+/**
+ * Single-use email-verification + workspace-activation token. Minted when a
+ * platform owner provisions a new org; consumed when the admin clicks the
+ * "Activate workspace" button in their welcome email. Stored as a bcrypt hash
+ * (same posture as poll OTPs) so a leaked row doesn't grant access.
+ * Each (orgId, userId) typically has 1 active row at a time. Resending the
+ * activation email marks any existing rows for that pair as consumed before
+ * minting a fresh one — guaranteeing the most recent link is the only one
+ * that still works.
+ */
+model OrgActivationToken {
+  id         String       @id @default(cuid())
+  orgId      String
+  org        Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  userId     String
+  user       User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash  String
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime     @default(now())
+
+  @@index([orgId, userId, consumedAt])
+  @@index([expiresAt])
 }
 
 model Event {
-  id                        String      @id @default(cuid())
-  name                      String
-  description               String?
-  date                      DateTime
-  endDate                   DateTime
-  locationId                String
-  location                  Location    @relation(fields: [locationId], references: [id], onDelete: Restrict)
-  capacity                  Int
-  virtualCapacity           Int         @default(0)
-  type                      EventType   @default(IN_PERSON)
-  status                    EventStatus @default(DRAFT)
-  zoomMeetingId             String?
-  zoomJoinUrl               String?
-  zoomPasscode              String?
-  zoomSessionKind           ZoomSessionKind @default(WEBINAR)
-  reminderPrimaryEnabled    Boolean     @default(true)
-  reminderPrimaryHoursBefore Int        @default(24)
-  reminderPrimaryEmail      Boolean     @default(true)
-  reminderPrimaryWhatsapp   Boolean     @default(false)
-  reminderPrimarySms        Boolean     @default(false)
-  reminderFinalEnabled      Boolean     @default(true)
-  reminderFinalHoursBefore Int         @default(2)
-  reminderFinalWhatsapp     Boolean     @default(true)
-  reminderFinalSms          Boolean     @default(false)
-  orgId                     String
-  org                       Organization @relation(fields: [orgId], references: [id])
-  guests                    Guest[]
-  reminderLogs              EventReminderLog[]
-  createdAt                 DateTime    @default(now())
-  updatedAt                 DateTime    @updatedAt
+  id                             String                     @id @default(cuid())
+  name                           String
+  description                    String?
+  date                           DateTime
+  endDate                        DateTime
+  scheduleMode                   EventScheduleMode          @default(SINGLE_BLOCK)
+  /**
+   * Validated MultiDayConfig JSON when scheduleMode is MULTI_DAY.
+   */
+  multiDayConfig                 Json?
+  locationId                     String
+  location                       Location                   @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  capacity                       Int
+  virtualCapacity                Int                        @default(0)
+  type                           EventType                  @default(IN_PERSON)
+  status                         EventStatus                @default(DRAFT)
+  zoomMeetingId                  String?
+  zoomJoinUrl                    String?
+  /**
+   * Host start URL from Zoom API — dashboard / Meeting SDK only; never sent to guests.
+   */
+  zoomStartUrl                   String?
+  zoomPasscode                   String?
+  zoomSessionKind                ZoomSessionKind            @default(WEBINAR)
+  reminderPrimaryEnabled         Boolean                    @default(true)
+  reminderPrimaryHoursBefore     Int                        @default(24)
+  reminderPrimaryEmail           Boolean                    @default(true)
+  reminderPrimaryWhatsapp        Boolean                    @default(false)
+  reminderPrimarySms             Boolean                    @default(false)
+  reminderFinalEnabled           Boolean                    @default(true)
+  reminderFinalHoursBefore       Int                        @default(2)
+  reminderFinalWhatsapp          Boolean                    @default(true)
+  reminderFinalSms               Boolean                    @default(false)
+  /**
+   * Blueprint-first wizard template (Bizzabo-style program archetypes).
+   */
+  blueprintTemplate              EventBlueprintTemplate     @default(BLANK)
+  /**
+   * When false, public /register page is invite-only (e.g. internal staff events).
+   */
+  allowPublicRegistration        Boolean                    @default(true)
+  /**
+   * When true (default), registration forms require a valid email. When false, phone alone is sufficient.
+   */
+  emailMandatoryForRegistration  Boolean                    @default(true)
+  /**
+   * When true, the org Command Center (`/o/[orgSlug]`) may create walk-in guests for this event
+   * if the entered email does not match an existing guest or CRM contact.
+   * Internal staff programs default this off in the wizard; conferences default on.
+   */
+  allowFlashEntry                Boolean                    @default(true)
+  /**
+   * Registration field policy: requireCompany, requireJobTitle, requireStaffId, requireDepartment, enableSavedProfileLookup.
+   */
+  registrationProfile            Json?
+  /**
+   * Optional custom public registration form definition (field types, labels). v1 JSON schema in app code.
+   */
+  customRegistrationForm         Json?
+  /**
+   * Conference template: hotel / travel notes.
+   */
+  accommodationTravelNotes       String?                    @db.Text
+  /**
+   * Training template: session materials as { title, url }[].
+   */
+  resourceLinks                  Json?
+  /**
+   * Public attendee page enhancements: agenda, speakers, resources, and optional venue extras.
+   */
+  publicExperience               Json?
+  /**
+   * Internal staff template: audience rules JSON (see internalStaffAudienceSchema).
+   */
+  internalStaffAudience          Json?
+  /**
+   * Internal staff notice type — drives memo subject and session wording (training, sensitization, etc.).
+   */
+  internalStaffNoticeKind        InternalStaffNoticeKind    @default(TRAINING)
+  /**
+   * Memo TO line, e.g. "ALL STAFF". When null, derived from audience rules at send time.
+   */
+  internalStaffNoticeTo          String?
+  /**
+   * Memo FROM line, e.g. "HEAD, HUMAN RESOURCES & ADMINISTRATION".
+   */
+  internalStaffNoticeFrom        String?
+  /**
+   * Memo CC line, e.g. "CHIEF EXECUTIVE OFFICER".
+   */
+  internalStaffNoticeCc          String?
+  /**
+   * Opening context / rationale paragraph for the staff notice (legal background, purpose).
+   */
+  internalStaffNoticeContext     String?                    @db.Text
+  /**
+   * Optional memo subject override. When null, derived from notice kind + event name.
+   */
+  internalStaffNoticeSubject     String?                    @db.VarChar(500)
+  /**
+   * Meeting room / room name for in-person and hybrid programmes (shown in venue line).
+   */
+  internalStaffMeetingRoom       String?                    @db.VarChar(240)
+  /**
+   * Email template selection for mandatory-attendance staff notices.
+   */
+  internalStaffEmailTemplateKind InternalStaffEmailTemplateKind @default(MEMORANDUM)
+  /**
+   * SMS template selection for mandatory-attendance staff notices.
+   */
+  internalStaffSmsTemplateKind   InternalStaffSmsTemplateKind   @default(STANDARD)
+  /**
+   * Optional custom SMS text when using BLANK SMS template.
+   */
+  internalStaffSmsCustomText    String?                    @db.Text
+  /**
+   * Maily editor JSON for BLANK staff notice emails (full custom memo body).
+   */
+  internalStaffEmailMailyJson   Json?
+  /**
+   * Internal staff: shared staff ID/email check-in vs personal links only (prevents proxy check-in).
+   */
+  internalStaffCheckInMode       InternalStaffCheckInMode   @default(PERSONAL_LINK)
+  /**
+   * Internal staff: show meal menu on self check-in and store choice on the check-in row.
+   */
+  internalStaffMealMenuEnabled   Boolean                    @default(false)
+  /**
+   * One list for everyone vs different lists per branch (guest.branch / directory).
+   */
+  internalStaffMealMenuScope     InternalStaffMealMenuScope @default(ALL_STAFF)
+  /**
+   * Internal staff: JSON string[] of meal labels when scope is ALL_STAFF.
+   */
+  internalStaffMealMenuItems     Json?
+  /**
+   * Internal staff: JSON [{ branch: string, items: string[] }] when scope is BY_BRANCH.
+   */
+  internalStaffMealMenusByBranch Json?
+  /**
+   * 21:9 style hero for registration / PWA contexts (https URL).
+   */
+  bannerImageUrl                 String?
+  brandLogoUrl                   String?
+  attendeeTheme                  AttendeeTheme              @default(SYSTEM)
+  /**
+   * Public registration page layout template (independent of light/dark color mode on Template 1).
+   */
+  publicPageTemplate             PublicPageTemplate         @default(SUMMIT)
+  /**
+   * Hex color e.g. #0f172a for attendee touchpoints.
+   */
+  brandPrimaryColor              String?
+  orgId                          String
+  org                            Organization               @relation(fields: [orgId], references: [id])
+  guests                         Guest[]
+  guestGroups                    EventGuestGroup[]
+  reminderLogs                   EventReminderLog[]
+  waitlistEntries                EventWaitlistEntry[]
+  /**
+   * Election & polling add-on (1-1). Created lazily when an organizer opens the poll tab.
+   */
+  poll                           Poll?
+  pollVerifications              PollVerification[]
+  guestMessageCampaigns          GuestMessageCampaign[]
+  feedbackCampaigns              EventFeedbackCampaign[]
+  feedbackResponses              EventFeedbackResponse[]
+  /**
+   * Optional organizer-defined post-event feedback questions.
+   * JSON shape: [{ key: string, prompt: string }]
+   */
+  feedbackQuestions              Json?
+  /**
+   * When true, admin feedback views and exports hide guest name/email per response.
+   */
+  feedbackAnonymous              Boolean                    @default(false)
+  /**
+   * Short code for the public feedback portal (`/fb/[feedbackShortCode]`).
+   * Guests enter their email on that page to open their personal feedback form.
+   */
+  feedbackShortCode              String?                    @unique
+  capacityAlerts                 EventCapacityAlert[]
+  teamMembers                    EventTeamMember[]
+  createdByUserId                String?
+  createdBy                      User?                      @relation("EventCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  createdAt                      DateTime                   @default(now())
+  updatedAt                      DateTime                   @updatedAt
 }
 
-model EventReminderLog {
+/**
+ * Dedupes venue capacity alert emails/SMS to org admins (80% and 100% thresholds per session day).
+ */
+model EventCapacityAlert {
   id        String   @id @default(cuid())
   eventId   String
   event     Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
-  kind      String
-  anchorAt  DateTime
+  dayIndex  Int
+  /**
+   * Percent threshold that triggered the alert (e.g. 80 or 100).
+   */
+  threshold Int
   sentAt    DateTime @default(now())
+
+  @@unique([eventId, dayIndex, threshold])
+  @@index([eventId])
+}
+
+model EventReminderLog {
+  id       String   @id @default(cuid())
+  eventId  String
+  event    Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  kind     String
+  anchorAt DateTime
+  sentAt   DateTime @default(now())
 
   @@unique([eventId, kind, anchorAt])
 }
 
-model Guest {
-  id        String      @id @default(cuid())
-  name      String
-  email     String
-  phone     String?
-  company   String?
-  jobTitle  String?
-  tier      Tier        @default(C)
-  mode      AttendMode  @default(IN_PERSON)
-  status    GuestStatus @default(INVITED)
-  /** REGISTERED = normal RSVP; EXTERNAL_JOIN = created from Zoom participant report (walk-in). */
-  joinSource GuestJoinSource @default(REGISTERED)
-  /** Zoom report `participants[].id` — used to dedupe walk-ins without email on re-sync. */
-  zoomParticipantReportId String?
-  qrCode    String?     @unique
-  zoomLink  String?
-  dietary   String?
-  repId     String?
-  eventId   String
-  event     Event       @relation(fields: [eventId], references: [id], onDelete: Cascade)
-  checkIn   CheckIn?
-  createdAt DateTime    @default(now())
+/**
+ * Phase F waitlist: entries that registered after capacity was full. When a guest
+ * declines (or is removed), the next WAITING entry by `position` is promoted to a
+ * Guest with status INVITED + invitationToken, and the smart invitation email
+ * fires (subject to publish gating).
+ */
+model EventWaitlistEntry {
+  id                String         @id @default(cuid())
+  eventId           String
+  event             Event          @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  email             String
+  name              String
+  phone             String?
+  company           String?
+  preferredMode     AttendMode?
+  position          Int
+  status            WaitlistStatus @default(WAITING)
+  notifiedAt        DateTime?
+  promotedToGuestId String?        @unique
+  createdAt         DateTime       @default(now())
 
-  @@index([eventId, email])
+  @@unique([eventId, email])
+  @@index([eventId, status, position])
+}
+
+model EventGuestGroup {
+  id        String   @id @default(cuid())
+  eventId   String
+  event     Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  name      String
+  sortOrder Int      @default(0)
+  guests    Guest[]
+  createdAt DateTime @default(now())
+
+  @@unique([eventId, name])
+  @@index([eventId])
+}
+
+model Guest {
+  id                        String                  @id @default(cuid())
+  name                      String
+  email                     String?
+  phone                     String?
+  contactId                 String?
+  contact                   OrgContact?             @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  company                   String?
+  jobTitle                  String?
+  tier                      Tier                    @default(C)
+  /**
+   * Null until guest chooses (hybrid) or is set at venue check-in vs virtual join.
+   */
+  mode                      AttendMode?
+  status                    GuestStatus             @default(INVITED)
+  /**
+   * One-time token for invitation accept link (organizer-added guests).
+   */
+  invitationToken           String?                 @unique
+  /**
+   * When the organizer invitation email was sent (null until publish for draft events).
+   */
+  invitationEmailSentAt     DateTime?
+  /**
+   * Internal staff roster notice email (memo-style; not an RSVP invite).
+   */
+  staffBriefingSentAt       DateTime?
+  /**
+   * Internal staff roster notice SMS companion.
+   */
+  staffBriefingSmsSentAt    DateTime?
+  /**
+   * Decline / "I Can't Make It" capture from the smart-invitation page.
+   */
+  declineReason             RsvpDeclineReason?
+  declineNote               String?                 @db.Text
+  declinedAt                DateTime?
+  /**
+   * When set, skip all subsequent reminder dispatch (set on decline; cleared if guest re-registers).
+   */
+  notificationsSuppressedAt DateTime?
+  /**
+   * Smart-RSVP confirmation: when the guest accepted the invitation, used to gate the
+   * unified confirmation email + persist any accommodation upsell choice.
+   */
+  rsvpConfirmedAt           DateTime?
+  /**
+   * Conference accommodation upsell: did the guest request hotel/lodging support?
+   */
+  accommodationRequested    Boolean                 @default(false)
+  /**
+   * Free-form preferences captured at RSVP (check-in/out dates, room type, dietary, etc).
+   */
+  accommodationDetails      String?                 @db.Text
+  eventGuestGroupId         String?
+  eventGuestGroup           EventGuestGroup?        @relation(fields: [eventGuestGroupId], references: [id], onDelete: SetNull)
+  /**
+   * REGISTERED = normal RSVP; EXTERNAL_JOIN = created from Zoom participant report (walk-in);
+   * WALK_IN = created from the org Command Center when flash entry is allowed and email did not match CRM.
+   */
+  joinSource                GuestJoinSource         @default(REGISTERED)
+  /**
+   * Zoom report `participants[].id` — used to dedupe walk-ins without email on re-sync.
+   */
+  zoomParticipantReportId   String?
+  /**
+   * One-time internal staff check-in token when event uses PERSONAL_LINK mode.
+   */
+  internalCheckInToken      String?                 @unique @db.VarChar(128)
+  qrCode                    String?                 @unique
+  zoomLink                  String?
+  dietary                   String?
+  /**
+   * ISO 3166-1 alpha-2 or organizer-defined free text from imports.
+   */
+  country                   String?
+  accessibilityNotes        String?
+  referralSource            String?
+  staffEmployeeId           String?
+  department                String?
+  /**
+   * Office/location branch (e.g. from staff directory); used for branch-scoped meal menus.
+   */
+  branch                    String?
+  repId                     String?
+  /**
+   * User who created this guest record (walk-in kiosk, manual add). Used for staff session-scoped PII.
+   */
+  createdByUserId           String?
+  createdBy                 User?                   @relation("GuestCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  /**
+   * Auth session id when a Staff user created this walk-in; PII visible only while session matches.
+   */
+  staffVisibleSessionId     String?
+  /**
+   * Election & polling add-on: flipped to true when this guest has cast a ballot for the
+   * event's {@link Poll}. The anonymized {@link Vote} table is intentionally NOT linked
+   * back to Guest (secret ballot). When the poll is non-anonymous, {@link BallotChoice}
+   * rows additionally record the attributed selections. This flag is the only Guest-side
+   * trace of participation in BOTH modes.
+   */
+  hasVoted                  Boolean                 @default(false)
+  eventId                   String
+  event                     Event                   @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  checkIns                  CheckIn[]
+  pollVerifications         PollVerification[]
+  /**
+   * Attributed ballot rows for non-anonymous polls. Always empty when the poll for
+   * this guest's event has `Poll.isAnonymous = true`.
+   */
+  ballotChoices             BallotChoice[]
+  messageDeliveries         GuestMessageDelivery[]
+  /**
+   * Magic-link token for post-event emoji feedback (`/feedback/[guestId]/[token]`).
+   */
+  feedbackToken             String?                 @unique
+  /**
+   * Short code for SMS feedback links (`/f/[feedbackSmsCode]` redirects to the full URL).
+   */
+  feedbackSmsCode           String?                 @unique
+  /**
+   * Short code for SMS registration pass links (`/j/[joinSmsCode]` → `/join/[guestId]`).
+   */
+  joinSmsCode               String?                 @unique
+  /**
+   * Short code for internal staff notice SMS (`/s/[staffNoticeSmsCode]` → check-in URL).
+   */
+  staffNoticeSmsCode        String?                 @unique
+  feedbackRequestedAt       DateTime?
+  feedbackResponses         EventFeedbackResponse[]
+  notificationLogs          GuestNotificationLog[]
+  emailContact              EmailContact?
+  createdAt                 DateTime                @default(now())
+
+  @@unique([eventId, email])
   @@index([eventId, zoomParticipantReportId])
+  @@index([eventId, phone])
+  @@index([createdByUserId])
+}
+
+/**
+ * Links workspace users to events for day-of operations and scoped data access.
+ * Marketing can enable per-rep PII override via dataAccessOverride + toggleExpiresAt.
+ */
+model EventTeamMember {
+  id                 String    @id @default(cuid())
+  eventId            String
+  event              Event     @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  userId             String
+  user               User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role               Role
+  dataAccessOverride Boolean   @default(false)
+  toggleEnabledAt    DateTime?
+  toggleExpiresAt    DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@unique([eventId, userId])
+  @@index([userId])
+  @@index([eventId])
+}
+
+/**
+ * Audit log for automated guest notifications (invite, registration, reminders, etc.).
+ */
+model GuestNotificationLog {
+  id             String   @id @default(cuid())
+  guestId        String
+  guest          Guest    @relation(fields: [guestId], references: [id], onDelete: Cascade)
+  eventId        String
+  kind           String
+  channel        String
+  status         String
+  detail         String?  @db.Text
+  /**
+   * Email or phone used for this attempt (snapshot at send time).
+   */
+  recipient      String?
+  /**
+   * Machine-readable failure / skip reason (see delivery error codes).
+   */
+  errorCode      String?
+  /**
+   * Provider reference (Resend message id, mNotify campaign id, etc.).
+   */
+  providerRef    String?
+  /**
+   * SMS body or email text snapshot at send time (for delivery audit preview).
+   */
+  messagePreview String?  @db.Text
+  createdAt      DateTime @default(now())
+
+  @@index([guestId, createdAt])
+  @@index([eventId, createdAt])
+  @@index([eventId, status, createdAt])
 }
 
 model CheckIn {
   id          String   @id @default(cuid())
-  guestId     String   @unique
-  guest       Guest    @relation(fields: [guestId], references: [id])
+  guestId     String
+  /**
+   * 1-based session day; single-day events always use 1.
+   */
+  dayIndex    Int      @default(1)
+  guest       Guest    @relation(fields: [guestId], references: [id], onDelete: Cascade)
+  /**
+   * How the check-in was performed: "manual" (Eventflow UI / API), "qr", "kiosk", etc.
+   */
   method      String   @default("manual")
+  /**
+   * Free-form origin tag for analytics — for example "open-zoom-redirect",
+   * "rsvp-presence-confirm", "rsvp-accept", "staff-personal-link". Pairs with
+   * {@link method} so the same method can come from multiple touchpoints.
+   */
+  source      String?
   checkedInAt DateTime @default(now())
+  /**
+   * Meal picked at check-in when the event enables internal staff meal selection.
+   */
+  mealChoice  String?
+
+  @@unique([guestId, dayIndex])
+  @@index([guestId])
 }
 
 model Account {
@@ -172,11 +968,28 @@ model VerificationToken {
   @@unique([identifier, token])
 }
 
+enum MediaAssetKind {
+  IMAGE
+  VIDEO
+  DOCUMENT
+}
+
 enum Role {
   ADMIN
   MARKETING
+  SALES_REP
   STAFF
-  SALES_REF
+}
+
+/**
+ * Workspace subscription tier. Free / Pro / Enterprise — chosen at provisioning
+ * time by the platform owner. Plan-based gating is not yet enforced in code
+ * but the column exists so we don't need another migration when it lands.
+ */
+enum OrgPlan {
+  FREE
+  PRO
+  ENTERPRISE
 }
 
 enum Tier {
@@ -209,15 +1022,918 @@ enum ZoomSessionKind {
   MEETING
 }
 
+/**
+ * SINGLE_BLOCK: date/endDate span (legacy). MULTI_DAY: day windows in multiDayConfig JSON.
+ */
+enum EventScheduleMode {
+  SINGLE_BLOCK
+  MULTI_DAY
+}
+
+enum EventBlueprintTemplate {
+  BLANK
+  CONFERENCE
+  INTERNAL_STAFF
+  TRAINING_WORKSHOP
+}
+
+enum AttendeeTheme {
+  LIGHT
+  DARK
+  SYSTEM
+}
+
+/**
+ * Public registration page design template (section structure is shared; styling differs).
+ */
+enum PublicPageTemplate {
+  /**
+   * Template 1 — Summit layout with separate light and dark color modes.
+   */
+  SUMMIT
+  /**
+   * Template 2 — Night Edition (MD3 glass / neon); optimized for dark presentation.
+   */
+  NIGHT_EDITION
+  /**
+   * Template 3 — TechNexus (electric blue MD3 dark, glass cards, masonry gallery).
+   */
+  TECH_NEXUS
+}
+
 enum GuestJoinSource {
   REGISTERED
   EXTERNAL_JOIN
+  WALK_IN
 }
 
 enum GuestStatus {
   INVITED
   REGISTERED
+  ACCEPTED
   CHECKED_IN
   JOINED
   NO_SHOW
+  DECLINED
+}
+
+enum GuestMessageChannel {
+  EMAIL
+  SMS
+}
+
+enum GuestMessageCampaignScope {
+  SINGLE
+  BLAST
+}
+
+enum GuestMessageDeliveryStatus {
+  SENT
+  FAILED
+  SKIPPED
+}
+
+/**
+ * Five-point emoji scale for post-event guest feedback.
+ */
+enum EventFeedbackRating {
+  VERY_UNSATISFIED
+  UNSATISFIED
+  NEUTRAL
+  SATISFIED
+  VERY_SATISFIED
+}
+
+/**
+ * Reasons captured when a guest clicks "I Can't Make It" on the smart-invitation email.
+ */
+enum RsvpDeclineReason {
+  SCHEDULING_CONFLICT
+  NOT_RELEVANT
+  OUT_OF_OFFICE
+  PREFER_VIRTUAL_ONLY
+  OTHER
+}
+
+enum WaitlistStatus {
+  WAITING
+  PROMOTED
+  EXPIRED
+  REMOVED
+}
+
+enum StaffEmploymentStatus {
+  PERMANENT
+  CONTRACT
+}
+
+/**
+ * CRM classification for organization-wide contacts.
+ */
+enum CrmContactKind {
+  ATTENDEE
+  EMPLOYEE
+  STAKEHOLDER
+  SPONSOR
+  MEDIA_PRESS
+  VIP
+  VENDOR
+  SPEAKER
+  OTHER
+}
+
+/**
+ * Internal staff programs: shared credential check-in vs one-time personal links (email/WhatsApp).
+ */
+enum InternalStaffCheckInMode {
+  SHARED_CREDENTIAL
+  PERSONAL_LINK
+}
+
+/**
+ * Internal staff program notice tone (memo subject and body wording).
+ */
+enum InternalStaffNoticeKind {
+  MEETING
+  TRAINING
+  SENSITIZATION
+  BRIEFING
+}
+
+/**
+ * Internal staff: email layout template selection.
+ */
+enum InternalStaffEmailTemplateKind {
+  MEMORANDUM
+  NOTICE
+  BLANK
+}
+
+/**
+ * Internal staff: SMS copy template selection.
+ */
+enum InternalStaffSmsTemplateKind {
+  STANDARD
+  SHORT
+  BLANK
+}
+
+/**
+ * Internal staff meal list: same menu for everyone vs per-branch menus.
+ */
+enum InternalStaffMealMenuScope {
+  ALL_STAFF
+  BY_BRANCH
+}
+
+// =====================================================================
+// Election & Polling Module
+// ---------------------------------------------------------------------
+// Architectural contract (do NOT relax without revisiting the threat model):
+//
+//   - {@link Poll} is 1-1 with {@link Event} (`@@unique eventId`). Optional —
+//     organizers create it lazily when opening the poll tab.
+//   - {@link PollPosition} represents a contest (e.g. "President"). It has
+//     1..n {@link PollCandidate} rows. A position with exactly one candidate
+//     is rendered as an unopposed "Confidence Vote" (Yes / No / Abstain).
+//   - {@link Vote} is the secret-ballot table. It MUST NOT carry a guestId
+//     or userId column (or any FK back to a person). The only Guest-side
+//     trace of participation is the {@link Guest.hasVoted} boolean, which
+//     records *that* the guest voted, not *what* they voted for.
+//   - {@link BallotChoice} is the OPTIONAL attribution table. It is written
+//     ONLY when the organizer explicitly disables anonymity for the poll
+//     (`Poll.isAnonymous = false`). In anonymous mode it is never written
+//     to — guest attribution literally never touches the database. When
+//     non-anonymous it mirrors {@link Vote} 1-to-1 inside the same Prisma
+//     transaction so the two datasets cannot diverge.
+//   - {@link PollVerification} is the identity gate (guest + 6-digit OTP +
+//     expiry + isUsed). It is destroyed/invalidated atomically with the
+//     vote write so a verification row can never be replayed.
+// =====================================================================
+
+/**
+ * Election & polling add-on for an Event (1-1 via {@link eventId}). When `isActive`
+ * is false the public voting route is hard-closed regardless of the window. The
+ * window `startTime`..`endTime` is the authoritative ballot-open period.
+ */
+model Poll {
+  id                      String         @id @default(cuid())
+  eventId                 String         @unique
+  event                   Event          @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  /**
+   * Public-facing ballot title (e.g. "AGM Elections 2026"). Defaults to the event name.
+   */
+  title                   String
+  /**
+   * Optional preamble shown on the voting page above the positions list.
+   * Editorial intro ("Why we're voting"); pairs with `instructions` (procedural).
+   */
+  description             String?        @db.Text
+  /**
+   * Optional procedural instructions shown to voters (e.g. "You'll get a 6-digit
+   * OTP by email — codes expire in 10 minutes. Make a choice for every position
+   * before submitting; ballots can't be edited once cast."). Rendered as a
+   * highlighted callout above the positions list on the public election section,
+   * the OTP gate, and the ballot itself. Plain text — whitespace preserved.
+   */
+  instructions            String?        @db.Text
+  /**
+   * Master switch — when false the gate + ballot routes return a "closed" state.
+   */
+  isActive                Boolean        @default(false)
+  /**
+   * When true, the election section appears on the public registration page.
+   * Independent of `isActive` (voting pause only affects ballot access, not visibility).
+   */
+  publicElectionPublished Boolean        @default(false)
+  /**
+   * Window when ballots will be accepted. Both are required so the UI can render the
+   * "opens in / closes in" countdown without ambiguity.
+   */
+  startTime               DateTime
+  endTime                 DateTime
+  /**
+   * When the admin published the results to attendees (email + SMS broadcast). While
+   * this is null, the public results URL responds with a "results not yet published"
+   * notice. Setting it activates `/events/[id]/poll/results` for anyone with the link.
+   */
+  resultsPublishedAt      DateTime?
+  /**
+   * Optional narrative shown above the results breakdown — congratulating winners,
+   * thanking voters, etc. Plain text rendered with whitespace preserved.
+   */
+  resultsSummary          String?        @db.Text
+  /**
+   * Anonymity switch.
+   * true  (default) → ONLY {@link Vote} rows are written; no guest attribution stored.
+   * Admins see aggregate tallies only. Receipt is a participation
+   * proof token, not a link to choices.
+   * false           → ALSO writes {@link BallotChoice} rows (guest ↔ position ↔ pick)
+   * so admins can see who voted what, and the receipt email/SMS
+   * echoes the voter's selections back to them.
+   * Changing this AFTER votes have been cast does not retroactively reveal/hide
+   * anything — write-time decides what gets persisted.
+   */
+  isAnonymous             Boolean        @default(true)
+  positions               PollPosition[]
+  votes                   Vote[]
+  ballotChoices           BallotChoice[]
+  createdAt               DateTime       @default(now())
+  updatedAt               DateTime       @updatedAt
+
+  @@index([eventId, isActive])
+}
+
+/**
+ * A single contest on the ballot (e.g. "President", "General Secretary"). Position
+ * with exactly one candidate is rendered as an unopposed "Confidence Vote".
+ */
+model PollPosition {
+  id            String          @id @default(cuid())
+  pollId        String
+  poll          Poll            @relation(fields: [pollId], references: [id], onDelete: Cascade)
+  title         String
+  /**
+   * Optional context shown under the title (term length, mandate, etc).
+   */
+  description   String?         @db.Text
+  /**
+   * Render order on the ballot (ascending). Ties broken by createdAt asc.
+   */
+  sortOrder     Int             @default(0)
+  candidates    PollCandidate[]
+  votes         Vote[]
+  ballotChoices BallotChoice[]
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  @@index([pollId, sortOrder])
+}
+
+/**
+ * A nominee for a {@link PollPosition}. `photoUrl` is an https URL stored elsewhere
+ * (Eventflow upload service or external CDN); `bio` is plain text or lightweight
+ * markdown rendered safely on the public ballot.
+ */
+model PollCandidate {
+  id            String         @id @default(cuid())
+  positionId    String
+  position      PollPosition   @relation(fields: [positionId], references: [id], onDelete: Cascade)
+  name          String
+  /**
+   * Current organizational role / title shown under the candidate name on the public
+   * profile (e.g. "Director of Global Strategy"). Distinct from `PollPosition.title`
+   * which is the role they are running for.
+   */
+  role          String?
+  photoUrl      String?
+  bio           String?        @db.Text
+  /**
+   * Optional supporting document — typically a CV, manifesto, or biography PDF.
+   * `resourceUrl` is an https URL or a `/uploads/...` relative path; `resourceName`
+   * is the display label rendered on the public profile.
+   */
+  resourceUrl   String?
+  resourceName  String?
+  /**
+   * Render order on the candidate grid (ascending). Ties broken by createdAt asc.
+   */
+  sortOrder     Int            @default(0)
+  votes         Vote[]
+  ballotChoices BallotChoice[]
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  @@index([positionId, sortOrder])
+}
+
+/**
+ * Anonymized ballot row. CRITICAL: this table carries NO FK back to Guest or User.
+ * Semantics per row:
+ * - Opposed contest (position has ≥2 candidates):
+ * candidateId      = the picked candidate
+ * confidenceChoice = null
+ * - Unopposed contest (position has exactly 1 candidate):
+ * candidateId      = the sole candidate (for YES votes) or null (for NO / ABSTAIN)
+ * confidenceChoice = YES | NO | ABSTAIN
+ * `pollId` is denormalized for fast `votes per poll` queries; it is always equal to
+ * `position.pollId` and is enforced by the submission server action.
+ */
+model Vote {
+  id               String                @id @default(cuid())
+  pollId           String
+  poll             Poll                  @relation(fields: [pollId], references: [id], onDelete: Cascade)
+  positionId       String
+  position         PollPosition          @relation(fields: [positionId], references: [id], onDelete: Cascade)
+  candidateId      String?
+  candidate        PollCandidate?        @relation(fields: [candidateId], references: [id], onDelete: SetNull)
+  /**
+   * Unopposed confidence selection. MUST be null for opposed contests and MUST be
+   * non-null for unopposed contests.
+   */
+  confidenceChoice VoteConfidenceChoice?
+  createdAt        DateTime              @default(now())
+
+  @@index([pollId])
+  @@index([positionId])
+  @@index([candidateId])
+}
+
+/**
+ * Attributed ballot row — written ONLY when {@link Poll.isAnonymous} is false. Mirrors
+ * the anonymized {@link Vote} table 1-to-1 per submission (one row per position) but
+ * adds the `guestId` link so admins can audit how each guest voted and so the receipt
+ * email/SMS can echo the voter's selections back to them.
+ * The two tables are written in a single Prisma transaction at submission time, so the
+ * datasets are guaranteed consistent within a non-anonymous poll. When `isAnonymous`
+ * is true this table simply stays empty for that poll — guest attribution literally
+ * never touches the database.
+ * Semantics per row match {@link Vote}: for an opposed contest `candidateId` is the
+ * pick and `confidenceChoice` is null; for an unopposed contest `confidenceChoice` is
+ * YES/NO/ABSTAIN and `candidateId` is the sole candidate (YES) or null (NO/ABSTAIN).
+ * `receiptRef` is the per-submission UUID also returned to the voter — it is shared
+ * across all rows from the same ballot submission so we can group "the choices on
+ * receipt X" with a single index lookup.
+ */
+model BallotChoice {
+  id               String                @id @default(cuid())
+  pollId           String
+  poll             Poll                  @relation(fields: [pollId], references: [id], onDelete: Cascade)
+  positionId       String
+  position         PollPosition          @relation(fields: [positionId], references: [id], onDelete: Cascade)
+  candidateId      String?
+  candidate        PollCandidate?        @relation(fields: [candidateId], references: [id], onDelete: SetNull)
+  confidenceChoice VoteConfidenceChoice?
+  guestId          String
+  guest            Guest                 @relation(fields: [guestId], references: [id], onDelete: Cascade)
+  receiptRef       String
+  createdAt        DateTime              @default(now())
+
+  @@unique([pollId, positionId, guestId])
+  @@index([pollId, guestId])
+  @@index([guestId])
+  @@index([candidateId])
+  @@index([receiptRef])
+}
+
+/**
+ * OTP record minted by `requestVotingOTP(email, eventId)` and consumed atomically
+ * by the ballot submission. One guest may have multiple historical rows (resends,
+ * expired codes); only one row may be `!isUsed && expiresAt > now()` at a time —
+ * enforced in the server action by invalidating prior rows on resend.
+ */
+model PollVerification {
+  id              String    @id @default(cuid())
+  eventId         String
+  event           Event     @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  guestId         String
+  guest           Guest     @relation(fields: [guestId], references: [id], onDelete: Cascade)
+  /**
+   * Lowercased email used to resolve the guest; stored for audit + rate limit lookup.
+   */
+  email           String
+  /**
+   * bcrypt hash of the 6-digit code. The plaintext is only ever held in memory long
+   * enough to deliver via email/SMS and is then discarded — mirrors the sign-in OTP
+   * pattern in {@link src/auth.ts} so a DB dump leaks zero usable codes.
+   */
+  codeHash        String
+  /**
+   * "email" | "whatsapp" — which provider delivered the code. UI uses this to label
+   * the resend button ("Resend on WhatsApp" vs "Resend by email").
+   */
+  deliveryChannel String?   @db.VarChar(24)
+  expiresAt       DateTime
+  isUsed          Boolean   @default(false)
+  /**
+   * Increments on each verifyVotingOTP failure for this row; the server action
+   * throws after a hard cap to defeat brute force.
+   */
+  attemptCount    Int       @default(0)
+  consumedAt      DateTime?
+  createdAt       DateTime  @default(now())
+
+  @@index([eventId, email])
+  @@index([guestId, isUsed])
+  @@index([expiresAt])
+}
+
+/**
+ * Confidence-vote selections for an unopposed {@link PollPosition}.
+ */
+enum VoteConfidenceChoice {
+  YES
+  NO
+  ABSTAIN
+}
+
+/**
+ * Marketing email broadcast module — separate from transactional guest notifications.
+ * {@link EmailContact} bridges event {@link Guest} rows to org-wide marketing consent
+ * and Resend audience sync; campaigns send via Resend Broadcast API.
+ */
+
+enum EmailUnsubscribeSource {
+  EMAIL_LINK
+  ADMIN_IMPORT
+  PREFERENCE_CENTER
+}
+
+enum EmailMarketingConsentSource {
+  PUBLIC_REGISTER
+  RSVP
+  PREFERENCE_CENTER
+  ADMIN_IMPORT
+  FEEDBACK
+}
+
+enum EmailCampaignStatus {
+  DRAFT
+  PREPARING
+  SCHEDULED
+  SENDING
+  SENT
+  FAILED
+}
+
+enum EmailCampaignRecipientStatus {
+  PENDING
+  SENT
+  DELIVERED
+  BOUNCED
+  COMPLAINED
+  OPENED
+  CLICKED
+  SKIPPED_UNSUBSCRIBED
+}
+
+/**
+ * Bridges a {@link Guest} to marketing-email state (subscription, Resend contact id).
+ * One row per guest; email is denormalized for send/segment queries.
+ */
+model EmailContact {
+  id                 String                   @id @default(cuid())
+  guestId            String                   @unique
+  guest              Guest                    @relation(fields: [guestId], references: [id], onDelete: Cascade)
+  email              String
+  isSubscribed       Boolean                  @default(false)
+  unsubscribedAt     DateTime?
+  unsubscribeSource  EmailUnsubscribeSource?
+  resendContactId     String?
+  /**
+   * When marketing consent was recorded (distinct from transactional invite/RSVP email).
+   * Null until an explicit opt-in is captured.
+   */
+  consentRecordedAt  DateTime?
+  /**
+   * Touchpoint that captured marketing opt-in.
+   */
+  consentSource      EmailMarketingConsentSource?
+  campaignRecipients EmailCampaignRecipient[]
+  createdAt          DateTime                 @default(now())
+  updatedAt          DateTime                 @updatedAt
+
+  @@unique([email])
+  @@index([isSubscribed])
+}
+
+/**
+ * Maily editor document + compiled HTML for broadcast sends.
+ */
+model EmailTemplate {
+  id              String          @id @default(cuid())
+  orgId           String
+  org             Organization    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  name            String
+  description     String?         @db.Text
+  /**
+   * Maily native document JSON.
+   */
+  editorState     Json
+  /**
+   * Rendered HTML sent to Resend; must include {{{RESEND_UNSUBSCRIBE_URL}}}.
+   */
+  compiledHtml    String          @db.Text
+  thumbnailUrl    String?
+  isPrebuilt      Boolean         @default(false)
+  createdByUserId String
+  createdBy       User            @relation("EmailTemplateCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  campaigns       EmailCampaign[]
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  @@index([orgId, updatedAt])
+  @@index([orgId, isPrebuilt])
+}
+
+/**
+ * A marketing broadcast send (draft → scheduled → sent via Resend).
+ */
+model EmailCampaign {
+  id                String                   @id @default(cuid())
+  orgId             String
+  org               Organization             @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  name              String
+  subject           String
+  templateId        String
+  template          EmailTemplate            @relation(fields: [templateId], references: [id], onDelete: Restrict)
+  /**
+   * Segment filter snapshot, e.g. { eventId, ticketTypes, rsvpStatus }.
+   */
+  segmentDefinition Json
+  status            EmailCampaignStatus      @default(DRAFT)
+  scheduledAt       DateTime?
+  sentAt            DateTime?
+  resendBroadcastId String?
+  resendAudienceId  String?
+  /**
+   * Last terminal error during prepare/send (e.g. Resend API failure mid-sync).
+   */
+  sendError         String?                  @db.Text
+  /**
+   * Cron/worker lock — set while a batch or finalize step is in flight.
+   * Stale locks (older than ~10 min) may be reclaimed by another worker.
+   */
+  sendProcessingStartedAt DateTime?
+  /**
+   * POST /broadcasts finalize attempts after all contacts are synced to the segment.
+   */
+  finalizeAttemptCount    Int                      @default(0)
+  lastFinalizeAttemptAt   DateTime?
+  createdByUserId   String
+  createdBy         User                     @relation("EmailCampaignCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  recipients        EmailCampaignRecipient[]
+  createdAt         DateTime                 @default(now())
+  updatedAt         DateTime                 @updatedAt
+
+  @@index([orgId, status, updatedAt])
+  @@index([templateId])
+  @@index([status, sendProcessingStartedAt])
+}
+
+/**
+ * Per-recipient send + engagement state derived from Resend webhooks.
+ */
+model EmailCampaignRecipient {
+  id             String                       @id @default(cuid())
+  campaignId     String
+  campaign       EmailCampaign                @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  emailContactId String
+  emailContact   EmailContact                 @relation(fields: [emailContactId], references: [id], onDelete: Cascade)
+  status         EmailCampaignRecipientStatus @default(PENDING)
+  sentAt         DateTime?
+  deliveredAt    DateTime?
+  bouncedAt      DateTime?
+  openedAt       DateTime?
+  firstClickedAt DateTime?
+  /**
+   * Resend per-message id — matches {@link EmailEvent.resendEmailId} from webhooks.
+   */
+  resendEmailId  String?                      @unique
+  /**
+   * When this contact was added to the campaign's Resend segment (prepare phase).
+   */
+  resendSegmentSyncedAt DateTime?
+  createdAt      DateTime                     @default(now())
+  updatedAt      DateTime                     @updatedAt
+
+  @@unique([campaignId, emailContactId])
+  @@index([campaignId])
+  @@index([emailContactId])
+}
+
+/**
+ * Append-only raw Resend webhook log for audit/debugging.
+ */
+model EmailEvent {
+  id            String   @id @default(cuid())
+  resendEmailId String?
+  eventType     String
+  payload       Json
+  receivedAt    DateTime @default(now())
+
+  @@index([resendEmailId])
+  @@index([receivedAt])
+}
+
+/**
+ * Paystack billing module — subscriptions, invoices, webhook audit.
+ * Paystack is the payment rail; Subscription.status + Organization.plan drive access.
+ */
+
+enum SubscriptionStatus {
+  /** No Paystack relationship yet (new org or enterprise manual). */
+  NONE
+  /** Card-free trial — Organization.plan may be PRO; not paying yet. */
+  TRIALING
+  /** Paying subscriber with a stored authorization. */
+  ACTIVE
+  /** Renewal charge failed — 3-day soft-lock grace before dunning exhausts. */
+  PAST_DUE
+  /** Cancelled or set not to renew — access until currentPeriodEnd. */
+  CANCELLED
+  /** Trial ended without payment — Organization.plan downgraded to FREE. */
+  TRIAL_EXPIRED
+  /** Dunning retries exhausted — login blocked (enforced Phase 4+). */
+  SUSPENDED
+}
+
+enum BillingInvoiceStatus {
+  PENDING
+  PAID
+  FAILED
+  CANCELLED
+}
+
+enum BillingInvoiceSource {
+  PAYSTACK
+  MANUAL
+  ENTERPRISE_PAYABLE
+}
+
+/**
+ * Paystack customer record — one per organization.
+ */
+model BillingCustomer {
+  id                   String       @id @default(cuid())
+  orgId                String       @unique
+  org                  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  paystackCustomerCode String       @unique
+  billingEmail         String
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @updatedAt
+}
+
+/**
+ * Billing relationship state for an org. Feature tier is on Organization.plan;
+ * this row tracks Paystack subscription lifecycle separately.
+ */
+model Subscription {
+  id                       String             @id @default(cuid())
+  orgId                    String             @unique
+  org                      Organization       @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  status                   SubscriptionStatus @default(NONE)
+  /**
+   * ISO currency for this subscription (GHS at launch).
+   */
+  currency                 String             @default("GHS")
+  paystackSubscriptionCode String?            @unique
+  paystackPlanCode         String?
+  authorizationCode        String?
+  /**
+   * Paystack email_token — required to disable/enable the subscription via API.
+   */
+  emailToken               String?
+  cardLast4                String?
+  cardExpMonth             Int?
+  cardExpYear              Int?
+  /**
+   * Set when Paystack sends subscription.expiring_cards; cleared on successful re-auth.
+   */
+  cardExpiringNotifiedAt   DateTime?
+  trialStartsAt            DateTime?
+  trialEndsAt              DateTime?
+  trialReminderDay60SentAt DateTime?
+  trialReminderDay80SentAt DateTime?
+  trialReminderDay89SentAt DateTime?
+  currentPeriodStart       DateTime?
+  currentPeriodEnd         DateTime?
+  /**
+   * ENTERPRISE only: set to currentPeriodEnd when coverage lapses with no new
+   * paid window. Does not change plan/status/access — ops queue signal only.
+   * Cleared when a future coverage window is applied.
+   */
+  coverageOverdueSince     DateTime?
+  /**
+   * Set when the one-time Enterprise coverage-overdue alert email was sent
+   * (customer To + configured billing alert CCs).
+   */
+  enterpriseCoverageOverdueAlertSentAt DateTime?
+  enterpriseCoverageReminderDay30SentAt DateTime?
+  enterpriseCoverageReminderDay14SentAt DateTime?
+  enterpriseCoverageReminderDay7SentAt  DateTime?
+  enterpriseCoverageReminderDay3SentAt  DateTime?
+  enterpriseCoverageReminderDay1SentAt  DateTime?
+  cancelAtPeriodEnd        Boolean            @default(false)
+  /**
+   * Last known Paystack subscription.status (active | non-renewing | cancelled | attention | complete).
+   * Drive resume vs re-subscribe UI from this — not from our local CANCELLED enum alone.
+   */
+  paystackStatus           String?
+  pastDueSince             DateTime?
+  dunningAttempt           Int                @default(0)
+  lastDunningAttemptAt     DateTime?
+  nextDunningAt            DateTime?
+  /**
+   * When set, dunning cron skips this org until cleared (superadmin pause).
+   */
+  dunningPausedAt          DateTime?
+  suspendedAt              DateTime?
+  /**
+   * Superadmin comp — distinct from card-free trial. While compEndsAt is in the
+   * future, entitlements use compPlan (PRO/ENTERPRISE) regardless of Paystack.
+   */
+  compPlan                 OrgPlan?
+  compEndsAt               DateTime?
+  invoices                 BillingInvoice[]
+  createdAt                DateTime           @default(now())
+  updatedAt                DateTime           @updatedAt
+
+  @@index([status, trialEndsAt])
+  @@index([status, currentPeriodEnd])
+  @@index([status, nextDunningAt])
+  @@index([compEndsAt])
+  @@index([coverageOverdueSince])
+}
+
+/**
+ * Mirror of Paystack invoices for org billing history and superadmin ops.
+ */
+model BillingInvoice {
+  id                  String               @id @default(cuid())
+  orgId               String
+  org                 Organization         @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  subscriptionId      String?
+  subscription        Subscription?        @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  paystackInvoiceCode String?              @unique
+  /**
+   * Paystack Payment Request code (PRQ_…) for Enterprise payable invoices.
+   */
+  paystackPaymentRequestCode String?       @unique
+  /**
+   * Hosted Paystack payment page for ENTERPRISE_PAYABLE (https://paystack.com/pay/PRQ_…).
+   */
+  paymentPageUrl      String?
+  /**
+   * Amount in pesewas (GHS smallest unit), matching Paystack API.
+   * For ENTERPRISE_PAYABLE with VAT on: exclusive base + levies (total charged).
+   * For subscription/mirrored charges: VAT-inclusive total.
+   */
+  amountPesewas       Int
+  /**
+   * Ghana VAT split, frozen at invoice creation (pesewas).
+   * base + nhil + getfund + vat === amountPesewas.
+   */
+  baseAmountPesewas   Int                  @default(0)
+  nhilAmountPesewas   Int                  @default(0)
+  getfundAmountPesewas Int                 @default(0)
+  vatAmountPesewas    Int                  @default(0)
+  currency            String               @default("GHS")
+  status              BillingInvoiceStatus @default(PENDING)
+  /**
+   * PAYSTACK = mirrored from Paystack charges/invoices;
+   * MANUAL = superadmin offline;
+   * ENTERPRISE_PAYABLE = Payment Request sent to customer.
+   */
+  source              BillingInvoiceSource @default(PAYSTACK)
+  /**
+   * Optional line items:
+   * [{ description: string, amountPesewas: number }]
+   * For ENTERPRISE_PAYABLE these are exclusive (pre-tax) amounts when VAT is applied.
+   */
+  lineItems           Json?
+  /**
+   * Enterprise payable: months of access granted when this invoice is paid.
+   * Locked at create time — not guessed at payment.
+   */
+  coverageMonths     Int?
+  /**
+   * Optional explicit coverage end (overrides coverageMonths when set).
+   */
+  coverageEndsAt     DateTime?
+  /**
+   * When true, on pay extend from existing Enterprise currentPeriodEnd if it is
+   * still in the future; otherwise start from paidAt. Never uses a leftover PRO
+   * period — PRO→ENTERPRISE clears currentPeriodEnd when disabling the Paystack sub.
+   */
+  extendFromPriorCoverage Boolean @default(false)
+  /**
+   * Set when coverage was applied to Subscription.currentPeriodEnd (idempotent).
+   */
+  coverageAppliedAt  DateTime?
+  paidAt              DateTime?
+  dueDate             DateTime?
+  periodStart         DateTime?
+  periodEnd           DateTime?
+  /**
+   * Set when the payable Enterprise invoice email was sent (create/resend).
+   */
+  invoiceEmailSentAt  DateTime?
+  /**
+   * Set when the EventFlow payment receipt email was sent (idempotency).
+   */
+  receiptEmailSentAt  DateTime?
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+
+  @@index([orgId, createdAt])
+  @@index([subscriptionId])
+  @@index([orgId, source])
+  @@index([orgId, status])
+}
+
+/**
+ * Append-only Paystack webhook log — insert before processing for idempotency.
+ */
+model PaymentEvent {
+  id              String        @id @default(cuid())
+  paystackEventId String        @unique
+  eventType       String
+  /**
+   * Best-effort org resolved from Paystack customer/subscription codes in payload.
+   */
+  orgId           String?
+  org             Organization? @relation(fields: [orgId], references: [id], onDelete: SetNull)
+  payload         Json
+  processedAt     DateTime?
+  processingError String?       @db.Text
+  receivedAt      DateTime      @default(now())
+
+  @@index([orgId, receivedAt])
+  @@index([eventType, receivedAt])
+  @@index([receivedAt])
+}
+
+/**
+ * Superadmin billing ops audit — queryable per org. Separate from PaymentEvent
+ * (which is Paystack webhook-only).
+ */
+model ManualBillingAction {
+  id          String       @id @default(cuid())
+  orgId       String
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  actorUserId String
+  actor       User         @relation("ManualBillingActionActor", fields: [actorUserId], references: [id], onDelete: Restrict)
+  /**
+   * Stable action key, e.g. suspend, grant_comp, resync_paystack.
+   */
+  action      String
+  reason      String       @db.Text
+  beforeState Json
+  afterState  Json
+  metadata    Json?
+  createdAt   DateTime     @default(now())
+
+  @@index([orgId, createdAt])
+  @@index([actorUserId, createdAt])
+  @@index([action, createdAt])
+}
+
+/**
+ * Singleton platform-wide settings (id = "default"). Editable by platform owners.
+ */
+model PlatformSettings {
+  id                   String   @id @default("default")
+  /**
+   * Public support contact shown in billing emails / mailto links.
+   * Not hardcoded — configure here.
+   */
+  supportEmail         String?
+  /**
+   * Addresses CC'd on PRO/Enterprise due alerts (trial reminders, Enterprise
+   * coverage reminders, card-expiring). Typically platform owner + support.
+   */
+  billingAlertCcEmails String[] @default([])
+  updatedAt            DateTime @updatedAt
+  updatedByUserId      String?
 }

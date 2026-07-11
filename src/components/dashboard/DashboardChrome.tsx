@@ -6,15 +6,24 @@ import { ReactNode, useState } from "react";
 
 import { DashboardNav } from "@/components/dashboard/DashboardNav";
 import { LogoutButton } from "@/components/dashboard/LogoutButton";
+import type { EnabledModules } from "@/lib/features/modules";
 import { cn } from "@/lib/utils";
 
 type DashboardChromeProps = {
   email: string | null | undefined;
   role: Role;
+  isPlatformOwner?: boolean;
+  enabledModules: EnabledModules;
   children: ReactNode;
 };
 
-export function DashboardChrome({ email, role, children }: DashboardChromeProps) {
+export function DashboardChrome({
+  email,
+  role,
+  isPlatformOwner = false,
+  enabledModules,
+  children
+}: DashboardChromeProps) {
   const [open, setOpen] = useState(false);
 
   return (
@@ -48,11 +57,14 @@ export function DashboardChrome({ email, role, children }: DashboardChromeProps)
           <p className="mt-1 truncate text-xs text-slate-500">{email}</p>
           <p className="mt-0.5 text-xs font-medium uppercase tracking-wide text-slate-400">
             {role.replace(/_/g, " ")}
+            {isPlatformOwner ? " · Platform owner" : ""}
           </p>
         </div>
         <div className="flex-1 overflow-y-auto px-3 py-4">
           <DashboardNav
             role={role}
+            isPlatformOwner={isPlatformOwner}
+            enabledModules={enabledModules}
             onNavigate={() => {
               setOpen(false);
             }}

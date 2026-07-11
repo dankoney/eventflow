@@ -8,9 +8,11 @@ import { useForm } from "react-hook-form";
 import { z } from "zod";
 
 import { Button } from "@/components/ui/Button";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { Input } from "@/components/ui/Input";
 import { Modal } from "@/components/ui/Modal";
 import { Table } from "@/components/ui/Table";
+import { WorkspaceNotice } from "@/components/ui/WorkspaceNotice";
 import {
   createOrgUser,
   deleteOrgUser,
@@ -32,7 +34,7 @@ const updateSchema = z.object({
 });
 type UpdateValues = z.infer<typeof updateSchema>;
 
-const ASSIGNABLE_ROLES: Role[] = [Role.MARKETING, Role.STAFF, Role.SALES_REF];
+const ASSIGNABLE_ROLES: Role[] = [Role.MARKETING, Role.STAFF, Role.SALES_REP];
 
 function roleLabel(r: Role) {
   return r.replace(/_/g, " ");
@@ -67,6 +69,8 @@ export function UserManagementPanel({ users }: UserManagementPanelProps) {
     tone: "ok" | "warn";
     lines: string[];
   } | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{ userId: string; label: string } | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
   const form = useForm<CreateValues>({
     resolver: zodResolver(createSchema),
     defaultValues: {
@@ -151,15 +155,22 @@ export function UserManagementPanel({ users }: UserManagementPanelProps) {
     router.refresh();
   }
 
-  async function onDelete(userId: string, label: string) {
+  function requestDeleteUser(userId: string, label: string) {
     const u = users.find((x) => x.id === userId);
     if (u?.role === Role.ADMIN) {
       setActionError("Admin users are protected and cannot be deleted from this screen.");
       return;
     }
     setActionError(null);
-    if (!window.confirm(`Delete user ${label}? This removes their account from this organization.`)) return;
-    const res = await deleteOrgUser({ userId });
+    setDeleteTarget({ userId, label });
+  }
+
+  async function confirmDeleteUser() {
+    if (!deleteTarget) return;
+    setDeleteBusy(true);
+    const res = await deleteOrgUser({ userId: deleteTarget.userId });
+    setDeleteBusy(false);
+    setDeleteTarget(null);
     if (!res.success) {
       setActionError(res.error ?? "Could not delete user.");
       return;
@@ -175,19 +186,19 @@ export function UserManagementPanel({ users }: UserManagementPanelProps) {
           Creates an account in this organization. They sign in with email OTP on the login page (same domain).
         </p>
         {inviteBanner ? (
-          <div
-            className={`mt-3 space-y-2 rounded-md border px-3 py-2 text-sm ${
-              inviteBanner.tone === "warn"
-                ? "border-amber-200 bg-amber-50 text-amber-950"
-                : "border-emerald-200 bg-emerald-50 text-emerald-900"
-            }`}
-            role="status"
-          >
-            {inviteBanner.lines.map((line, i) => (
-              <p key={i} className={i === 0 ? "font-medium" : "text-[13px] leading-snug"}>
-                {line}
-              </p>
-            ))}
+          <div className="mt-3">
+            <WorkspaceNotice
+              variant={inviteBanner.tone === "warn" ? "info" : "success"}
+              onDismiss={() => setInviteBanner(null)}
+            >
+              <div className="space-y-2 pr-1">
+                {inviteBanner.lines.map((line, i) => (
+                  <p key={i} className={i === 0 ? "font-semibold" : "text-[13px] leading-snug opacity-95"}>
+                    {line}
+                  </p>
+                ))}
+              </div>
+            </WorkspaceNotice>
           </div>
         ) : null}
         <form onSubmit={form.handleSubmit(onCreate)} className="mt-4 grid max-w-xl gap-3 sm:grid-cols-2">
@@ -235,7 +246,13 @@ export function UserManagementPanel({ users }: UserManagementPanelProps) {
       <div>
         <h3 className="text-sm font-semibold text-slate-900">Organization users</h3>
         <p className="mt-1 text-xs text-slate-600">All accounts linked to this workspace.</p>
-        {actionError ? <p className="mt-2 text-sm text-red-600">{actionError}</p> : null}
+        {actionError ? (
+          <div className="mt-2">
+            <WorkspaceNotice variant="error" onDismiss={() => setActionError(null)}>
+              {actionError}
+            </WorkspaceNotice>
+          </div>
+        ) : null}
         <div className="mt-4 overflow-x-auto">
           <Table headers={["Name", "Email", "Role", "Joined", "Actions"]}>
             {users.map((u) => (
@@ -317,7 +334,7 @@ export function UserManagementPanel({ users }: UserManagementPanelProps) {
                         type="button"
                         variant="danger"
                         className="px-3 py-1.5 text-xs"
-                        onClick={() => void onDelete(u.id, u.email ?? u.name ?? u.id)}
+                        onClick={() => requestDeleteUser(u.id, u.email ?? u.name ?? u.id)}
                         disabled={u.role === Role.ADMIN}
                       >
                         {u.role === Role.ADMIN ? "Delete blocked" : "Delete"}
@@ -364,6 +381,22 @@ export function UserManagementPanel({ users }: UserManagementPanelProps) {
           </dl>
         ) : null}
       </Modal>
+
+      <ConfirmDialog
+        open={!!deleteTarget}
+        title="Delete organization user?"
+        message={
+          deleteTarget
+            ? `Delete user ${deleteTarget.label}? This removes their account from this organization.`
+            : ""
+        }
+        confirmLabel="Delete user"
+        cancelLabel="Cancel"
+        variant="danger"
+        busy={deleteBusy}
+        onCancel={() => setDeleteTarget(null)}
+        onConfirm={() => void confirmDeleteUser()}
+      />
     </div>
   );
 }

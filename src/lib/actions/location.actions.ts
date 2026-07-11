@@ -1,6 +1,6 @@
 "use server";
 
-import { Role } from "@prisma/client";
+import { Prisma, Role } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 
@@ -11,7 +11,12 @@ import type { ActionResult } from "@/types";
 const locationWriteSchema = z.object({
   name: z.string().min(1).max(120),
   address: z.string().min(1).max(500),
-  capacity: z.coerce.number().int().min(1)
+  capacity: z.coerce.number().int().min(1),
+  city: z.string().max(160).optional().nullable(),
+  latitude: z.number().min(-90).max(90).optional().nullable(),
+  longitude: z.number().min(-180).max(180).optional().nullable(),
+  googlePlaceId: z.string().max(256).optional().nullable(),
+  facilityImageUrl: z.string().max(500).optional().nullable()
 });
 
 function formatZodError(error: z.ZodError) {
@@ -20,6 +25,53 @@ function formatZodError(error: z.ZodError) {
 
 function canManageLocations(role: Role) {
   return role === "ADMIN" || role === "MARKETING";
+}
+
+function revalidateLocationConsumers() {
+  revalidatePath("/dashboard/settings");
+  revalidatePath("/events/new");
+  revalidatePath("/events/new/classic");
+  revalidatePath("/events");
+}
+
+export async function searchLocationsForPicker(
+  query: string
+): Promise<ActionResult<{ id: string; name: string; address: string; capacity: number; city: string | null }[]>> {
+  const session = await auth();
+  if (!session?.user?.orgId || !canManageLocations(session.user.role)) {
+    return { success: false, error: "Unauthorized" };
+  }
+
+  const q = query.trim();
+  const baseWhere: Prisma.LocationWhereInput = { orgId: session.user.orgId };
+
+  try {
+    const rows = await prisma.location.findMany({
+      where:
+        q.length === 0
+          ? baseWhere
+          : {
+              ...baseWhere,
+              OR: [
+                { name: { contains: q, mode: "insensitive" } },
+                { address: { contains: q, mode: "insensitive" } },
+                { city: { contains: q, mode: "insensitive" } }
+              ]
+            },
+      orderBy: { name: "asc" },
+      take: 30,
+      select: {
+        id: true,
+        name: true,
+        address: true,
+        capacity: true,
+        city: true
+      }
+    });
+    return { success: true, data: rows };
+  } catch {
+    return { success: false, error: "Could not search venues" };
+  }
 }
 
 export async function createLocation(
@@ -39,11 +91,15 @@ export async function createLocation(
         name: parsed.data.name.trim(),
         address: parsed.data.address.trim(),
         capacity: parsed.data.capacity,
-        orgId: session.user.orgId
+        orgId: session.user.orgId,
+        city: parsed.data.city?.trim() || null,
+        latitude: parsed.data.latitude ?? null,
+        longitude: parsed.data.longitude ?? null,
+        googlePlaceId: parsed.data.googlePlaceId?.trim() || null,
+        facilityImageUrl: parsed.data.facilityImageUrl?.trim() || null
       }
     });
-    revalidatePath("/dashboard/settings");
-    revalidatePath("/events/new");
+    revalidateLocationConsumers();
     return { success: true, data: { id: loc.id } };
   } catch {
     return { success: false, error: "Could not create location" };
@@ -76,11 +132,15 @@ export async function updateLocation(
       data: {
         name: parsed.data.name.trim(),
         address: parsed.data.address.trim(),
-        capacity: parsed.data.capacity
+        capacity: parsed.data.capacity,
+        city: parsed.data.city?.trim() || null,
+        latitude: parsed.data.latitude ?? null,
+        longitude: parsed.data.longitude ?? null,
+        googlePlaceId: parsed.data.googlePlaceId?.trim() || null,
+        facilityImageUrl: parsed.data.facilityImageUrl?.trim() || null
       }
     });
-    revalidatePath("/dashboard/settings");
-    revalidatePath("/events/new");
+    revalidateLocationConsumers();
     return { success: true, data: { id: parsed.data.id } };
   } catch {
     return { success: false, error: "Could not update location" };
@@ -107,8 +167,7 @@ export async function deleteLocation(input: z.input<typeof deleteLocationSchema>
 
   try {
     await prisma.location.delete({ where: { id: parsed.data.id } });
-    revalidatePath("/dashboard/settings");
-    revalidatePath("/events/new");
+    revalidateLocationConsumers();
     return { success: true, data: { id: parsed.data.id } };
   } catch {
     return {

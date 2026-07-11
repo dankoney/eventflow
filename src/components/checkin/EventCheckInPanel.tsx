@@ -9,7 +9,7 @@ import {
   checkInGuestByQr,
   type CheckInResult
 } from "@/lib/actions/checkin.actions";
-import type { RecentCheckInRow } from "@/lib/db/checkins";
+import type { CheckInsPageResult } from "@/lib/db/checkins";
 import {
   enqueueOfflineCheckIn,
   getGuestCache,
@@ -23,17 +23,28 @@ import type { ActionResult } from "@/types";
 
 import { CheckInSearch } from "./CheckInSearch";
 import { QRScanner } from "./QRScanner";
-import { RecentActivity } from "./RecentActivity";
+import { RecentCheckInsPanel } from "./RecentCheckInsPanel";
+import { StaffWalkInForm } from "./StaffWalkInForm";
 
 const QR_HEX = /^[a-f0-9]{64}$/;
 
 type EventCheckInPanelProps = {
   eventId: string;
-  initialRecent: RecentCheckInRow[];
+  canManageCheckInRoster: boolean;
+  canRegisterStaffWalkIn: boolean;
+  emailMandatoryForRegistration: boolean;
+  initialCheckIns: CheckInsPageResult;
   initialGuestCache: CachedGuestRow[];
 };
 
-export function EventCheckInPanel({ eventId, initialRecent, initialGuestCache }: EventCheckInPanelProps) {
+export function EventCheckInPanel({
+  eventId,
+  canManageCheckInRoster,
+  canRegisterStaffWalkIn,
+  emailMandatoryForRegistration,
+  initialCheckIns,
+  initialGuestCache
+}: EventCheckInPanelProps) {
   const router = useRouter();
   const [banner, setBanner] = useState<{ tone: "ok" | "err" | "warn"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -203,16 +214,23 @@ export function EventCheckInPanel({ eventId, initialRecent, initialGuestCache }:
 
       <div className="grid gap-6 lg:grid-cols-2">
         <QRScanner onDecode={onQr} disabled={busy} />
-        <CheckInSearch
-          eventId={eventId}
-          onPickGuest={onPickGuest}
-          disabled={busy}
-          offline={!online}
-          cachedGuests={guestRows}
-        />
+        <CheckInSearch guests={guestRows} onCheckIn={onPickGuest} disabled={busy} />
       </div>
 
-      <RecentActivity entries={initialRecent} />
+      {canRegisterStaffWalkIn ? (
+        <StaffWalkInForm
+          eventId={eventId}
+          emailMandatory={emailMandatoryForRegistration}
+          disabled={busy}
+        />
+      ) : null}
+
+      <RecentCheckInsPanel
+        eventId={eventId}
+        canManageRoster={canManageCheckInRoster}
+        initial={initialCheckIns}
+        className="border-0 p-0 shadow-none"
+      />
     </div>
   );
 }

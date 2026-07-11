@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 280 64" width="280" height="64" role="img" aria-label="Eventflow">
+  <rect x="4" y="10" width="44" height="44" rx="11" fill="#18181b"/>
+  <text x="26" y="40" text-anchor="middle" fill="#ffffff" font-family="Helvetica, Arial, sans-serif" font-weight="700" font-size="24">E</text>
+  <text x="60" y="42" fill="#18181b" font-family="Helvetica, Arial, sans-serif" font-weight="700" font-size="28" letter-spacing="-0.5">Eventflow</text>
+</svg>

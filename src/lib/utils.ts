@@ -5,11 +5,57 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+/** Normalize server-serialized date strings back to Date for client components. */
+export function coerceDate(value: Date | string | number): Date {
+  return value instanceof Date ? value : new Date(value);
+}
+
 export function formatDate(date: Date | string, locale = "en-US") {
   return new Intl.DateTimeFormat(locale, {
     dateStyle: "medium",
     timeStyle: "short"
   }).format(new Date(date));
+}
+
+export function formatEventPeriod(
+  start: Date | string,
+  end: Date | string,
+  locale = "en-US"
+) {
+  const a = new Date(start);
+  const b = new Date(end);
+  const sameDay =
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate();
+  if (sameDay) {
+    const day = new Intl.DateTimeFormat(locale, {
+      weekday: "short",
+      day: "numeric",
+      month: "short",
+      year: "numeric"
+    }).format(a);
+    const tA = new Intl.DateTimeFormat(locale, { hour: "numeric", minute: "2-digit" }).format(a);
+    const tB = new Intl.DateTimeFormat(locale, { hour: "numeric", minute: "2-digit" }).format(b);
+    return `${day} · ${tA} - ${tB}`;
+  }
+  const s = new Intl.DateTimeFormat(locale, {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit"
+  }).format(a);
+  const e = new Intl.DateTimeFormat(locale, {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit"
+  }).format(b);
+  return `${s} → ${e}`;
 }
 
 /** Value for `<input type="datetime-local" />` in local time. */

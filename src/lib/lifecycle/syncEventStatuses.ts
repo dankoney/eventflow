@@ -6,6 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { eventCompletionAt } from "./eventTiming";
 
 function revalidateEventPaths(eventId: string) {
+  revalidatePath("/events");
   revalidatePath(`/events/${eventId}`);
   revalidatePath(`/events/${eventId}/edit`);
   revalidatePath(`/register/${eventId}`);

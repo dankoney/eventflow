@@ -32,3 +32,9 @@ tsconfig.tsbuildinfo
 
 # local archives
 eventflow.zip
+
+# runtime / local-only
+tmp/
+public/uploads/
+.well-known/acme-challenge/
+.windsurf/

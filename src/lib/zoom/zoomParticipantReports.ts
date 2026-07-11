@@ -19,11 +19,53 @@ type ParticipantsPage = {
   next_page_token?: string;
 };
 
-function reportPathForSession(zoomSessionKind: ZoomSessionKind, meetingOrWebinarId: string): string {
-  const id = encodeURIComponent(meetingOrWebinarId);
+type PastInstance = {
+  uuid?: string;
+  start_time?: string;
+  end_time?: string;
+};
+
+/**
+ * Zoom quirk: past meeting/webinar UUID identifiers (non-numeric) often require
+ * double URL encoding in path params for report endpoints.
+ */
+function encodeZoomSessionIdentifier(id: string): string {
+  const raw = id.trim();
+  if (!raw) return "";
+  const once = encodeURIComponent(raw);
+  if (/^\d+$/.test(raw)) return once;
+  return encodeURIComponent(once);
+}
+
+function reportPathForSession(zoomSessionKind: ZoomSessionKind, meetingOrWebinarIdentifier: string): string {
+  const id = encodeZoomSessionIdentifier(meetingOrWebinarIdentifier);
   return zoomSessionKind === ZoomSessionKind.WEBINAR
     ? `/report/webinars/${id}/participants`
     : `/report/meetings/${id}/participants`;
+}
+
+function instancesPathForSession(zoomSessionKind: ZoomSessionKind, meetingOrWebinarId: string): string {
+  const id = encodeURIComponent(meetingOrWebinarId);
+  return zoomSessionKind === ZoomSessionKind.WEBINAR
+    ? `/past_webinars/${id}/instances`
+    : `/past_meetings/${id}/instances`;
+}
+
+function otherZoomSessionKind(kind: ZoomSessionKind): ZoomSessionKind {
+  return kind === ZoomSessionKind.WEBINAR ? ZoomSessionKind.MEETING : ZoomSessionKind.WEBINAR;
+}
+
+/**
+ * Zoom returns HTTP 404 + code 3001 when the ID exists but the wrong resource type was used
+ * (e.g. webinar ID requested via `/report/meetings/...`).
+ */
+export function isZoomParticipantEndpointNotFound(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : String(e);
+  if (!msg.includes("404")) return false;
+  return (
+    msg.includes("3001") ||
+    /\b(does not exist|not exist|cannot be found)\b/i.test(msg)
+  );
 }
 
 /**
@@ -33,10 +75,10 @@ function reportPathForSession(zoomSessionKind: ZoomSessionKind, meetingOrWebinar
  */
 export async function fetchZoomParticipantReport(
   zoomSessionKind: ZoomSessionKind,
-  meetingOrWebinarId: string,
+  meetingOrWebinarIdentifier: string,
   orgId: string
 ): Promise<ZoomReportParticipant[]> {
-  const basePath = reportPathForSession(zoomSessionKind, meetingOrWebinarId);
+  const basePath = reportPathForSession(zoomSessionKind, meetingOrWebinarIdentifier);
   const out: ZoomReportParticipant[] = [];
   let nextPageToken: string | undefined;
 
@@ -50,6 +92,106 @@ export async function fetchZoomParticipantReport(
   } while (nextPageToken);
 
   return out;
+}
+
+async function fetchZoomPastSessionInstanceUuids(
+  zoomSessionKind: ZoomSessionKind,
+  meetingOrWebinarId: string,
+  orgId: string,
+  bounds?: { startsAt: Date; endsAt: Date }
+): Promise<string[]> {
+  const data = await zoomFetch<{ meetings?: PastInstance[]; webinars?: PastInstance[]; instances?: PastInstance[] }>(
+    instancesPathForSession(zoomSessionKind, meetingOrWebinarId),
+    orgId
+  );
+  const rows = data.instances ?? data.meetings ?? data.webinars ?? [];
+  const inWindow = (r: PastInstance): boolean => {
+    if (!bounds) return true;
+    const raw = (r.start_time ?? "").trim();
+    if (!raw) return true;
+    const t = new Date(raw);
+    if (Number.isNaN(t.getTime())) return true;
+    const from = bounds.startsAt.getTime() - 24 * 60 * 60 * 1000;
+    const to = bounds.endsAt.getTime() + 24 * 60 * 60 * 1000;
+    const ts = t.getTime();
+    return ts >= from && ts <= to;
+  };
+  return rows
+    .filter(inWindow)
+    .map((r) => (r.uuid ?? "").trim())
+    .filter(Boolean);
+}
+
+/**
+ * Fetch report rows for the canonical session ID and all discoverable past UUID instances.
+ * This prevents a single test occurrence from masking real event participants when Zoom
+ * meeting IDs are reused across multiple runs.
+ */
+async function fetchZoomParticipantReportAcrossInstances(
+  zoomSessionKind: ZoomSessionKind,
+  meetingOrWebinarId: string,
+  orgId: string,
+  bounds?: { startsAt: Date; endsAt: Date }
+): Promise<ZoomReportParticipant[]> {
+  const all: ZoomReportParticipant[] = [];
+  const tried = new Set<string>();
+
+  let uuids: string[] = [];
+  try {
+    uuids = await fetchZoomPastSessionInstanceUuids(zoomSessionKind, meetingOrWebinarId, orgId, bounds);
+  } catch {
+    uuids = [];
+  }
+
+  const identifiers = uuids.length > 0 ? uuids : [meetingOrWebinarId.trim()];
+  for (const uuid of identifiers) {
+    if (!uuid) continue;
+    if (tried.has(uuid)) continue;
+    tried.add(uuid);
+    try {
+      const rows = await fetchZoomParticipantReport(zoomSessionKind, uuid, orgId);
+      all.push(...rows);
+    } catch {
+      // Some UUIDs become unavailable due to account retention; continue with others.
+    }
+  }
+
+  return all;
+}
+
+/**
+ * Like {@link fetchZoomParticipantReport}, but if Zoom responds with “not found” for the
+ * stored session kind, retries once with the opposite kind (meeting vs webinar).
+ */
+export async function fetchZoomParticipantReportWithKindFallback(
+  zoomSessionKind: ZoomSessionKind,
+  meetingOrWebinarId: string,
+  orgId: string,
+  bounds?: { startsAt: Date; endsAt: Date }
+): Promise<{ participants: ZoomReportParticipant[]; sessionKindUsed: ZoomSessionKind }> {
+  try {
+    const participants = await fetchZoomParticipantReportAcrossInstances(
+      zoomSessionKind,
+      meetingOrWebinarId,
+      orgId,
+      bounds
+    );
+    return { participants, sessionKindUsed: zoomSessionKind };
+  } catch (e) {
+    if (!isZoomParticipantEndpointNotFound(e)) throw e;
+    const other = otherZoomSessionKind(zoomSessionKind);
+    try {
+      const participants = await fetchZoomParticipantReportAcrossInstances(
+        other,
+        meetingOrWebinarId,
+        orgId,
+        bounds
+      );
+      return { participants, sessionKindUsed: other };
+    } catch {
+      throw e;
+    }
+  }
 }
 
 export function participantEmailFromReport(p: ZoomReportParticipant): string | null {

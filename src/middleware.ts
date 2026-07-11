@@ -1,9 +1,19 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 
-const protectedPrefixes = ["/dashboard", "/events", "/guests", "/checkin", "/analytics", "/settings"];
+const protectedPrefixes = ["/dashboard", "/events", "/guests", "/checkin", "/deliveries", "/analytics", "/settings", "/superadmin"];
+
+/**
+ * Guest-facing ballot + results live under `/events/[id]/poll` (same URL prefix as
+ * the dashboard's `/events/[id]/…` routes). They must stay public — voters authenticate
+ * with the OTP gate on the page, not the org NextAuth session.
+ */
+function isPublicEventBallotPath(pathname: string) {
+  return /^\/events\/[^/]+\/poll(\/.*)?$/i.test(pathname);
+}
 
 function isProtectedPath(pathname: string) {
+  if (isPublicEventBallotPath(pathname)) return false;
   return protectedPrefixes.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
 }
 
@@ -41,8 +51,12 @@ export const config = {
     "/guests/:path*",
     "/checkin",
     "/checkin/:path*",
+    "/deliveries",
+    "/deliveries/:path*",
     "/analytics/:path*",
     "/settings",
-    "/settings/:path*"
+    "/settings/:path*",
+    "/superadmin",
+    "/superadmin/:path*"
   ]
 };

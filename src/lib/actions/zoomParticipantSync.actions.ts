@@ -24,7 +24,9 @@ export async function syncZoomParticipantsForEvent(
     reportRows: number;
     liveDashboardRows: number;
     pastDashboardRows: number;
+    pastOneDashboardRows: number;
     matchedUpdated: number;
+    matchedNoChange: number;
     externalCreated: number;
     skippedNoIdentifier: number;
   }>

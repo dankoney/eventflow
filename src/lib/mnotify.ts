@@ -3,10 +3,21 @@ import { prisma } from "@/lib/prisma";
 const MNOTIFY_API = "https://api.mnotify.com/api";
 const QUICK_CHUNK = 100;
 
+/**
+ * Value of `MNOTIFY_DEFAULT_SENDER_ID` after trim and non-alphanumeric strip (3–11 chars for mNotify).
+ * Returns empty string if the variable is unset or invalid — there is no hardcoded sender fallback in code.
+ */
+export function getMnotifyDefaultSenderIdFromEnv(): string {
+  const raw = (process.env.MNOTIFY_DEFAULT_SENDER_ID ?? "").trim().replace(/[^a-zA-Z0-9]/g, "");
+  if (raw.length >= 3 && raw.length <= 11) return raw;
+  if (raw.length > 11) return raw.slice(0, 11);
+  return "";
+}
+
 /** Strip to digits for mNotify recipient list (no leading + in JSON). */
 export function phoneToMnotifyRecipient(raw: string | null | undefined): string | null {
-  if (!raw) return null;
-  const digits = raw.replace(/\D/g, "");
+  if (raw == null || String(raw).trim() === "") return null;
+  const digits = String(raw).replace(/\D/g, "");
   if (digits.length < 10) return null;
   return digits;
 }
@@ -16,9 +27,19 @@ type MnotifySuccessSummary = {
   total_sent?: number;
 };
 
-function parseMnotifyJson(text: string): { status?: string; message?: string; summary?: MnotifySuccessSummary } {
+function parseMnotifyJson(text: string): {
+  status?: string;
+  message?: string;
+  code?: string;
+  summary?: MnotifySuccessSummary & Record<string, unknown>;
+} {
   try {
-    return JSON.parse(text) as { status?: string; message?: string; summary?: MnotifySuccessSummary };
+    return JSON.parse(text) as {
+      status?: string;
+      message?: string;
+      code?: string;
+      summary?: MnotifySuccessSummary & Record<string, unknown>;
+    };
   } catch {
     return {};
   }
@@ -31,8 +52,15 @@ function resolveApiKey(stored: string | null | undefined): string | null {
   return fromEnv.length > 0 ? fromEnv : null;
 }
 
+function resolveSendSender(storedSenderId: string | null | undefined): string {
+  const id = storedSenderId?.trim() ?? "";
+  if (id.length >= 3 && id.length <= 11) return id.slice(0, 11);
+  return getMnotifyDefaultSenderIdFromEnv();
+}
+
 /**
  * POST /sms/quick — bulk same message. Omits `sms_type` and `sms_otp` (OTP payloads charge differently).
+ * Uses org API key or `MNOTIFY_API_KEY`; org sender ID or `MNOTIFY_DEFAULT_SENDER_ID` (env only, no code default).
  */
 export async function sendOrgMnotifyQuickSms(
   orgId: string,
@@ -47,16 +75,30 @@ export async function sendOrgMnotifyQuickSms(
       mnotifySenderId: true
     }
   });
-  if (!org?.mnotifyEnabled) {
-    return { ok: false, error: "mNotify is not enabled for this organization." };
+  if (!org) {
+    return { ok: false, error: "Organization not found." };
   }
   const apiKey = resolveApiKey(org.mnotifyApiKey);
-  const sender = org.mnotifySenderId?.trim() ?? "";
+  /** Allow server env key when the org has not saved its own key (common single-tenant setup). */
+  const canUseEnvOnlyFallback =
+    Boolean(process.env.MNOTIFY_API_KEY?.trim()) && !org.mnotifyApiKey?.trim();
+  if (!org.mnotifyEnabled && !canUseEnvOnlyFallback) {
+    return {
+      ok: false,
+      error:
+        "mNotify SMS is not enabled for this organization. Turn it on under Settings → Integrations, or clear the organization’s mNotify API key field to use MNOTIFY_API_KEY from the server environment."
+    };
+  }
   if (!apiKey) {
     return { ok: false, error: "mNotify API key is not configured (org or MNOTIFY_API_KEY)." };
   }
-  if (!sender || sender.length > 11) {
-    return { ok: false, error: "mNotify sender ID must be 1–11 characters." };
+  const sender = resolveSendSender(org.mnotifySenderId);
+  if (!sender || sender.length < 3 || sender.length > 11) {
+    return {
+      ok: false,
+      error:
+        "mNotify sender ID must be 3–11 characters. Save one under Settings → Integrations or set MNOTIFY_DEFAULT_SENDER_ID in the server environment."
+    };
   }
 
   const bodyText = message.trim().slice(0, 3200);
@@ -103,7 +145,7 @@ export async function sendOrgMnotifyQuickSms(
   return { ok: true, campaignId: lastCampaignId, totalSent };
 }
 
-/** Validate API key + sender against mNotify sender ID status. */
+/** Validate API key + sender against mNotify (POST /senderid/status). */
 export async function checkMnotifySenderStatus(
   apiKey: string,
   senderName: string
@@ -128,6 +170,21 @@ export async function checkMnotifySenderStatus(
     return { ok: false, detail: (data.message ?? text).slice(0, 280) };
   }
   const summary = data.summary as Record<string, unknown> | undefined;
-  const bits = summary ? JSON.stringify(summary).slice(0, 240) : data.message ?? "OK";
-  return { ok: true, detail: bits };
+  if (summary) {
+    const senderFromSummary =
+      (typeof summary.sender_name === "string" && summary.sender_name) ||
+      (typeof summary["sender name"] === "string" && (summary["sender name"] as string)) ||
+      sender;
+    const statusFromSummary =
+      (typeof summary.status === "string" && summary.status) ||
+      (typeof summary.Status === "string" && (summary.Status as string)) ||
+      "Unknown";
+    const purposeFromSummary = typeof summary.purpose === "string" ? summary.purpose : null;
+    const base = `Sender ID "${senderFromSummary}" is ${statusFromSummary}.`;
+    return {
+      ok: true,
+      detail: purposeFromSummary ? `${base} Purpose: ${purposeFromSummary}.` : base
+    };
+  }
+  return { ok: true, detail: data.message ?? "Sender ID status looks good." };
 }

@@ -3,8 +3,9 @@ import { redirect } from "next/navigation";
 
 import { auth } from "@/auth";
 import { StatCard } from "@/components/dashboard/StatCard";
+import { WorkspacePageShell } from "@/components/ui/WorkspacePageShell";
 import { getDashboardStats } from "@/lib/db/dashboard";
-import { isRepScopedRole } from "@/lib/permissions";
+import { isEventLinkedRole, isSalesRepRole } from "@/lib/permissions";
 
 export default async function DashboardPage() {
   const session = await auth();
@@ -15,18 +16,22 @@ export default async function DashboardPage() {
   const stats = await getDashboardStats(session.user.orgId, session.user.id, session.user.role);
 
   return (
-    <section>
-      <h1 className="text-2xl font-semibold tracking-tight text-slate-900">Dashboard</h1>
-      <p className="mt-1 text-sm text-slate-600">
-        Overview for your organization
-        {isRepScopedRole(session.user.role) ? " — scoped to guests assigned to you." : ""}
-      </p>
-
-      <div className="mt-8 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+    <WorkspacePageShell
+      className="max-w-7xl"
+      kicker="Workspace"
+      title="Dashboard"
+      description={
+        <>
+          Overview for your organization
+          {isSalesRepRole(session.user.role) ? " — scoped to guests assigned to you." : ""}
+        </>
+      }
+    >
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard
           title="Total Events"
           value={stats.totalEvents}
-          description={isRepScopedRole(session.user.role) ? "Events where you have guests" : "All events in org"}
+          description={isEventLinkedRole(session.user.role) ? "Events linked to you" : "All events in org"}
           icon={<Calendar className="h-5 w-5" />}
         />
         <StatCard
@@ -48,6 +53,6 @@ export default async function DashboardPage() {
           icon={<Percent className="h-5 w-5" />}
         />
       </div>
-    </section>
+    </WorkspacePageShell>
   );
 }

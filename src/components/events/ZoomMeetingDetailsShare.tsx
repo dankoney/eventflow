@@ -70,7 +70,7 @@ export function ZoomMeetingDetailsShare({
   }, [copyDetails, detailsText, eventName, joinUrl]);
 
   const iconBtn =
-    "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-700 transition hover:border-slate-300 hover:bg-slate-50";
+    "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-200/90 bg-white text-slate-600 shadow-sm transition hover:border-zinc-300 hover:bg-zinc-50 hover:text-zinc-900";
 
   return (
     <div className="space-y-2">
@@ -79,7 +79,7 @@ export function ZoomMeetingDetailsShare({
           href={joinUrl}
           target="_blank"
           rel="noreferrer"
-          className="break-all text-sky-700 underline"
+          className="break-all text-sm font-medium text-zinc-800 underline decoration-zinc-300 underline-offset-2 transition hover:text-zinc-950"
         >
           Open join link
         </a>
