@@ -12,6 +12,7 @@ import { WorkspacePageShell } from "@/components/ui/WorkspacePageShell";
 import { daysBetween, MAX_DUNNING_ATTEMPTS } from "@/lib/billing/constants";
 import { prisma } from "@/lib/prisma";
 
+import { BillingCronHeartbeatCard } from "./BillingCronHeartbeatCard";
 import { RegenerateActivationButton } from "./RegenerateActivationButton";
 
 export const dynamic = "force-dynamic";
@@ -37,45 +38,54 @@ export default async function SuperadminPage({
   const now = new Date();
   const coverageFilter = searchParams?.coverage === "overdue";
 
-  const orgs = await prisma.organization.findMany({
-    orderBy: [{ createdAt: "desc" }],
-    select: {
-      id: true,
-      name: true,
-      slug: true,
-      plan: true,
-      activatedAt: true,
-      createdAt: true,
-      subscription: {
-        select: {
-          status: true,
-          trialStartsAt: true,
-          trialEndsAt: true,
-          pastDueSince: true,
-          dunningAttempt: true,
-          nextDunningAt: true,
-          currentPeriodEnd: true,
-          cancelAtPeriodEnd: true,
-          coverageOverdueSince: true
-        }
-      },
-      billingInvoices: {
-        where: {
-          source: BillingInvoiceSource.ENTERPRISE_PAYABLE,
-          status: BillingInvoiceStatus.PENDING
+  const [orgs, cronHeartbeat] = await Promise.all([
+    prisma.organization.findMany({
+      orderBy: [{ createdAt: "desc" }],
+      select: {
+        id: true,
+        name: true,
+        slug: true,
+        plan: true,
+        activatedAt: true,
+        createdAt: true,
+        subscription: {
+          select: {
+            status: true,
+            trialStartsAt: true,
+            trialEndsAt: true,
+            pastDueSince: true,
+            dunningAttempt: true,
+            nextDunningAt: true,
+            currentPeriodEnd: true,
+            cancelAtPeriodEnd: true,
+            coverageOverdueSince: true
+          }
         },
-        select: { id: true },
-        take: 1
-      },
-      _count: { select: { events: true, users: true } },
-      users: {
-        where: { role: "ADMIN" },
-        orderBy: { createdAt: "asc" },
-        take: 1,
-        select: { id: true, name: true, email: true, emailVerified: true }
+        billingInvoices: {
+          where: {
+            source: BillingInvoiceSource.ENTERPRISE_PAYABLE,
+            status: BillingInvoiceStatus.PENDING
+          },
+          select: { id: true },
+          take: 1
+        },
+        _count: { select: { events: true, users: true } },
+        users: {
+          where: { role: "ADMIN" },
+          orderBy: { createdAt: "asc" },
+          take: 1,
+          select: { id: true, name: true, email: true, emailVerified: true }
+        }
       }
-    }
-  });
+    }),
+    prisma.platformSettings.findUnique({
+      where: { id: "default" },
+      select: {
+        billingLifecycleCronLastOkAt: true,
+        billingDunningCronLastOkAt: true
+      }
+    })
+  ]);
 
   const pendingCount = orgs.filter((o) => o.activatedAt === null).length;
   const overdueOrgs = orgs.filter(
@@ -103,6 +113,12 @@ export default async function SuperadminPage({
         </div>
       }
     >
+      <BillingCronHeartbeatCard
+        lifecycleLastOkAt={cronHeartbeat?.billingLifecycleCronLastOkAt ?? null}
+        dunningLastOkAt={cronHeartbeat?.billingDunningCronLastOkAt ?? null}
+        now={now}
+      />
+
       <section className="grid gap-3 sm:grid-cols-3">
         <Tile
           icon={<Building2 className="h-4 w-4" aria-hidden />}

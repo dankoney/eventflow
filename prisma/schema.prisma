@@ -1930,10 +1930,20 @@ model PlatformSettings {
    */
   supportEmail         String?
   /**
-   * Addresses CC'd on PRO/Enterprise due alerts (trial reminders, Enterprise
+   * Addresses BCC'd on PRO/Enterprise due alerts (trial reminders, Enterprise
    * coverage reminders, card-expiring). Typically platform owner + support.
    */
   billingAlertCcEmails String[] @default([])
+  /** Last successful GET /api/cron/billing/lifecycle (UTC). */
+  billingLifecycleCronLastOkAt DateTime?
+  /** Last successful GET /api/cron/billing/dunning (UTC). */
+  billingDunningCronLastOkAt DateTime?
+  /** When miss-watch began (set on first health check if lastOk is still null). */
+  billingCronWatchStartedAt DateTime?
+  /** Idempotency: last miss alert for lifecycle (cleared when cron recovers). */
+  billingLifecycleCronMissAlertSentAt DateTime?
+  /** Idempotency: last miss alert for dunning (cleared when cron recovers). */
+  billingDunningCronMissAlertSentAt DateTime?
   updatedAt            DateTime @updatedAt
   updatedByUserId      String?
 }

@@ -235,8 +235,9 @@ async function dispatchPaystackEvent(
         data.plan_object && typeof data.plan_object === "object"
           ? (data.plan_object as Record<string, unknown>)
           : null;
+      const isCheckoutActivate = purpose === "renew_now" || purpose === "subscribe";
       const status =
-        purpose === "renew_now" ||
+        isCheckoutActivate ||
         asString(planObject?.plan_code) ||
         asString(data.plan) ||
         asString(metadata.planCode)
@@ -289,7 +290,7 @@ async function dispatchPaystackEvent(
         where: { id: resolvedOrgId },
         select: { plan: true }
       });
-      if (orgPlan?.plan === OrgPlan.ENTERPRISE && purpose !== "renew_now") {
+      if (orgPlan?.plan === OrgPlan.ENTERPRISE && purpose !== "renew_now" && purpose !== "subscribe") {
         return { handled: true as const, orgId: resolvedOrgId };
       }
 
@@ -310,7 +311,7 @@ async function dispatchPaystackEvent(
         previousEmailToken: string | null;
       } | null = null;
 
-      if (purpose === "renew_now") {
+      if (purpose === "renew_now" || purpose === "subscribe") {
         const planCode =
           asString(metadata.planCode) ??
           asString(planObject?.plan_code) ??

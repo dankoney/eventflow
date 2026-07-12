@@ -19,8 +19,13 @@ PATH=/usr/local/bin:/usr/bin:/bin
 # Broadcast send worker (when MODULE_BROADCAST_ENABLED=true)
 # */5 * * * * curl -fsS -H "Authorization: Bearer YOUR_CRON_SECRET" "https://eventflow.cosabonita.tech/api/cron/broadcast-send" >/dev/null
 
-# Billing — trial expiry, cancel-at-period-end, trial reminder emails (daily 06:00 UTC)
+# Billing — trial expiry, cancel-at-period-end, Enterprise coverage reminders (daily 06:00 UTC)
+# CONFIRMED LIVE on eventflow.cosabonita.tech (access logs: 06:00 UTC daily, HTTP 200).
 0 6 * * * curl -fsS -H "Authorization: Bearer YOUR_CRON_SECRET" "https://eventflow.cosabonita.tech/api/cron/billing/lifecycle" >/dev/null
 
-# Billing — dunning charge retries (every 6 hours)
+# Billing — dunning charge retries (every 6 hours: 00/06/12/18 UTC)
+# CONFIRMED LIVE on eventflow.cosabonita.tech (access logs match this cadence, HTTP 200).
 0 */6 * * * curl -fsS -H "Authorization: Bearer YOUR_CRON_SECRET" "https://eventflow.cosabonita.tech/api/cron/billing/dunning" >/dev/null
+
+# Missed-run monitoring: /api/cron/reminders (hourly) stamps/alerts if either
+# billing cron has not succeeded in >25 hours (email → Platform alert BCC list).

@@ -17,6 +17,10 @@ function eventflowLogoUrl(): string | null {
   return resolveEmailAssetUrl("/brand/eventflow-logo.png");
 }
 
+function eventflowLogoDarkUrl(): string | null {
+  return resolveEmailAssetUrl("/brand/eventflow-logo-dark.png");
+}
+
 function appHomeUrl(): string {
   return resolvePublicAppBaseUrlFromEnv()?.replace(/\/$/, "") ?? "https://eventflow.cosabonita.tech";
 }
@@ -32,20 +36,48 @@ type BillingEmailShellParams = {
   footerNote?: string;
 };
 
+/** Fixed height only — width scales from intrinsic PNG aspect (≈2:1). */
+const EMAIL_LOGO_HEIGHT_PX = 48;
+
 /**
  * Shared Eventflow billing email layout (inline styles for client compatibility).
  * Matches the operational trial/billing notification design.
  */
 export function renderBillingEmailShell(params: BillingEmailShellParams): string {
   const appUrl = escapeHtml(appHomeUrl());
-  const logoSrc = eventflowLogoUrl();
-  const logoBlock = logoSrc
-    ? `<a href="${appUrl}" style="display:inline-block;text-decoration:none">
-         <img src="${escapeHtml(logoSrc)}" alt="EventFlow" width="140" height="32" style="display:block;height:32px;width:auto;border:0;outline:none;text-decoration:none" />
-       </a>`
-    : `<a href="${appUrl}" style="font-size:22px;font-weight:800;letter-spacing:-0.025em;color:#111827;text-decoration:none;display:inline-flex;align-items:center;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
+  const logoLight = eventflowLogoUrl();
+  const logoDark = eventflowLogoDarkUrl();
+
+  let logoBlock: string;
+  if (logoLight) {
+    /**
+     * Only set height — never width+height together. Email clients that honor
+     * both HTML attributes squash non-matching artwork (oval swirl).
+     */
+    const imgStyle = `display:block;height:${EMAIL_LOGO_HEIGHT_PX}px;width:auto;max-width:220px;border:0;outline:none;text-decoration:none`;
+    const lightImg = `<img
+         class="ef-logo-light"
+         src="${escapeHtml(logoLight)}"
+         alt="EventFlow"
+         height="${EMAIL_LOGO_HEIGHT_PX}"
+         style="${imgStyle}" />`;
+    const darkImg = logoDark
+      ? `<img
+         class="ef-logo-dark"
+         src="${escapeHtml(logoDark)}"
+         alt="EventFlow"
+         height="${EMAIL_LOGO_HEIGHT_PX}"
+         style="display:none;height:${EMAIL_LOGO_HEIGHT_PX}px;width:auto;max-width:220px;border:0;outline:none;text-decoration:none" />`
+      : "";
+    logoBlock = `<a href="${appUrl}" style="display:inline-block;text-decoration:none;line-height:0">
+         ${lightImg}
+         ${darkImg}
+       </a>`;
+  } else {
+    logoBlock = `<a href="${appUrl}" style="font-size:22px;font-weight:800;letter-spacing:-0.025em;color:#111827;text-decoration:none;display:inline-flex;align-items:center;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
          EventFlow<span style="width:8px;height:8px;background-color:#10b981;border-radius:50%;margin-left:4px;display:inline-block"></span>
        </a>`;
+  }
 
   const badgeBg = params.badgeBackground ?? "#fef3c7";
   const badgeFg = params.badgeColor ?? "#d97706";
@@ -61,16 +93,39 @@ export function renderBillingEmailShell(params: BillingEmailShellParams): string
     "This is an automated operational notification regarding your EventFlow subscription workspace. If you have any questions, reply directly to this email to reach our support team.";
 
   return `<!DOCTYPE html>
-<html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light dark">
+  <meta name="supported-color-schemes" content="light dark">
   <title>EventFlow</title>
+  <style type="text/css">
+    :root { color-scheme: light dark; }
+    /* Default / Gmail / unsupported clients: light logo only */
+    .ef-logo-dark { display: none !important; max-height: 0 !important; overflow: hidden !important; }
+    .ef-logo-light { display: block !important; }
+    @media (prefers-color-scheme: dark) {
+      .ef-logo-light { display: none !important; max-height: 0 !important; overflow: hidden !important; }
+      .ef-logo-dark { display: block !important; max-height: none !important; overflow: visible !important; }
+    }
+    /* Outlook.com / newer Outlook dark mode */
+    [data-ogsc] .ef-logo-light,
+    [data-ogsb] .ef-logo-light { display: none !important; max-height: 0 !important; overflow: hidden !important; }
+    [data-ogsc] .ef-logo-dark,
+    [data-ogsb] .ef-logo-dark { display: block !important; max-height: none !important; overflow: visible !important; }
+  </style>
+  <!--[if mso]>
+  <style type="text/css">
+    .ef-logo-dark { display: none !important; }
+    .ef-logo-light { display: block !important; }
+  </style>
+  <![endif]-->
 </head>
 <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;background-color:#f9fafb;color:#1f2937;margin:0;padding:0;-webkit-font-smoothing:antialiased">
   <div style="width:100%;background-color:#f9fafb;padding:40px 0">
     <div style="max-width:540px;margin:0 auto;background:#ffffff;border-radius:12px;border:1px solid #e5e7eb;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.05)">
-      <div style="padding:32px 32px 20px 32px">
+      <div style="padding:28px 32px 16px 32px;text-align:right">
         ${logoBlock}
       </div>
       <div style="padding:0 32px 32px 32px;font-size:15px;line-height:1.6;color:#4b5563">
@@ -481,6 +536,61 @@ export async function sendBillingEnterprisePayableInvoiceEmail(params: {
     to: params.to,
     subject: `Invoice from EventFlow — action required · ${params.totalLabel} · ${params.orgName}`,
     html
+  });
+}
+
+/** Ops alert when a billing cron has not succeeded within the miss threshold. */
+export async function sendBillingCronMissAlertEmail(params: {
+  job: "lifecycle" | "dunning";
+  hoursSince: number;
+  lastOkAt: Date | null;
+  thresholdHours: number;
+}) {
+  const settings = await getPlatformBillingAlertSettings();
+  /**
+   * Support / billing contact is the primary To. Alert BCC list is internal
+   * copies only — never skip supportEmail by address pattern.
+   */
+  const to = settings.supportEmail?.trim() || null;
+  if (!to) {
+    console.error(
+      "[billing] cron miss alert skipped — configure Support / Billing Contact Email in Platform alert settings"
+    );
+    return;
+  }
+  const bcc = settings.billingAlertCcEmails.filter(
+    (email) => email.trim().toLowerCase() !== to.toLowerCase()
+  );
+  const jobLabel =
+    params.job === "lifecycle"
+      ? "/api/cron/billing/lifecycle"
+      : "/api/cron/billing/dunning";
+  const lastOkLabel = params.lastOkAt
+    ? params.lastOkAt.toISOString()
+    : "never recorded since monitoring started";
+
+  const bodyHtml = `
+    <p style="margin-top:0;margin-bottom:16px">The billing cron <strong>${escapeHtml(jobLabel)}</strong> has not completed successfully in about <strong>${params.hoursSince} hours</strong> (threshold ${params.thresholdHours}h).</p>
+    <p style="margin-top:0;margin-bottom:16px">Last OK: <strong>${escapeHtml(lastOkLabel)}</strong> (UTC).</p>
+    <p style="margin-top:0;margin-bottom:16px">Check Plesk scheduled tasks / crontab, then run:</p>
+    <pre style="margin:0 0 16px;padding:12px;background:#f4f4f5;border-radius:8px;font-size:12px;overflow:auto">curl -fsS -H "Authorization: Bearer $CRON_SECRET" \\
+  "https://eventflow.cosabonita.tech${escapeHtml(jobLabel)}"</pre>
+  `.trim();
+
+  const html = renderBillingEmailShell({
+    badgeText: "Billing cron miss",
+    badgeBackground: "#fee2e2",
+    badgeColor: "#b91c1c",
+    heading: "Billing cron may have stopped",
+    bodyHtml,
+    footerNote: "Internal EventFlow ops alert — not a customer message."
+  });
+
+  await sendTransactionalEmail({
+    to,
+    subject: `Alert: billing ${params.job} cron silent ~${params.hoursSince}h`,
+    html,
+    bcc
   });
 }
 

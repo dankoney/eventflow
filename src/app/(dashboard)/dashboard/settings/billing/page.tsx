@@ -253,7 +253,10 @@ export default async function BillingSettingsPage() {
                 </Badge>
               ) : (
                 <Badge className="bg-zinc-100 text-zinc-800 ring-1 ring-zinc-200">
-                  {subscription?.cancelAtPeriodEnd && stillInPaidPeriod
+                  {subscription?.cancelAtPeriodEnd &&
+                  stillInPaidPeriod &&
+                  (access.status === SubscriptionStatus.ACTIVE ||
+                    access.status === SubscriptionStatus.CANCELLED)
                     ? "Won't renew"
                     : statusLabel(access.status)}
                 </Badge>
@@ -317,16 +320,25 @@ export default async function BillingSettingsPage() {
             <div className="space-y-2 border-t border-zinc-100 pt-4">
               <p className="text-sm text-zinc-600">
                 {access.status === SubscriptionStatus.TRIALING
-                  ? "Add a payment method to convert your trial to a paid PRO subscription."
-                  : "Subscribe to Eventflow PRO (monthly, GHS) via Paystack."}
+                  ? "Add a payment method to convert your trial to Eventflow Pro Tier."
+                  : "Subscribe to Eventflow Pro Tier."}
               </p>
-              <BillingSubscribeButton
-                label={
-                  access.status === SubscriptionStatus.TRIALING
-                    ? "Add payment / Subscribe to PRO"
-                    : "Subscribe to PRO"
-                }
-              />
+              {renewOptionsResult.success && renewOptionsResult.data ? (
+                <BillingSubscribeButton
+                  label={
+                    access.status === SubscriptionStatus.TRIALING
+                      ? "Add payment / Subscribe to PRO"
+                      : "Subscribe to PRO"
+                  }
+                  options={renewOptionsResult.data.options}
+                  defaultInterval={renewOptionsResult.data.defaultInterval}
+                />
+              ) : (
+                <p className="text-sm text-rose-700">
+                  {renewOptionsResult.error ??
+                    "Unable to load PRO plan pricing. Check Paystack plan codes match the API key mode (test vs live)."}
+                </p>
+              )}
             </div>
           ) : null}
 
@@ -335,7 +347,17 @@ export default async function BillingSettingsPage() {
               <p className="text-sm text-zinc-600">
                 Or complete checkout to replace the payment method on file.
               </p>
-              <BillingSubscribeButton label="Update payment method" />
+              {renewOptionsResult.success && renewOptionsResult.data ? (
+                <BillingSubscribeButton
+                  label="Update payment method"
+                  options={renewOptionsResult.data.options}
+                  defaultInterval={renewOptionsResult.data.defaultInterval}
+                />
+              ) : (
+                <p className="text-sm text-rose-700">
+                  {renewOptionsResult.error ?? "Unable to load plan pricing for checkout."}
+                </p>
+              )}
             </div>
           ) : null}
 
@@ -358,8 +380,7 @@ export default async function BillingSettingsPage() {
           ) : null}
 
           <p className="text-xs text-zinc-500">
-            Payments are processed securely by Paystack (GHS). Status updates via webhook — allow a minute after
-            checkout.
+            Payments are processed securely by Paystack (GHS).
           </p>
         </section>
 

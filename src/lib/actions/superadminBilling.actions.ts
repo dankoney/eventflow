@@ -214,10 +214,11 @@ async function transitionOrgOntoEnterprise(orgId: string): Promise<{
 }
 
 /**
- * ENTERPRISE → PRO: plan flip only. Does not create a Paystack subscription —
- * the org must subscribe via Settings → Billing (self-serve checkout).
+ * Clear invoice-billed / paid-period leftovers when leaving ENTERPRISE (or
+ * stripping a paid PRO relationship for FREE). Does not create a Paystack
+ * subscription — the org must subscribe via Settings → Billing.
  */
-async function transitionOrgOntoProFromEnterprise(orgId: string): Promise<void> {
+async function clearPaidSubscriptionRelationship(orgId: string): Promise<void> {
   await ensureSubscriptionRow(orgId);
   await prisma.subscription.update({
     where: { orgId },
@@ -234,14 +235,23 @@ async function transitionOrgOntoProFromEnterprise(orgId: string): Promise<void> 
       cardLast4: null,
       cardExpMonth: null,
       cardExpYear: null,
+      cardExpiringNotifiedAt: null,
       pastDueSince: null,
       dunningAttempt: 0,
+      lastDunningAttemptAt: null,
       nextDunningAt: null,
+      dunningPausedAt: null,
       suspendedAt: null,
       compPlan: null,
-      compEndsAt: null
+      compEndsAt: null,
+      ...clearEnterpriseCoverageTrackingData
     }
   });
+}
+
+/** ENTERPRISE → PRO: plan flip only (clear leftovers; self-serve subscribe). */
+async function transitionOrgOntoProFromEnterprise(orgId: string): Promise<void> {
+  await clearPaidSubscriptionRelationship(orgId);
 }
 
 /**
@@ -826,6 +836,21 @@ export async function setOrgPlanOverrideAction(
           };
         }
 
+        if (plan === OrgPlan.FREE && org.plan !== OrgPlan.FREE) {
+          /**
+           * Leaving ENTERPRISE/PRO must clear cancelAtPeriodEnd + coverage
+           * window leftovers, or Billing still shows "Won't renew".
+           */
+          await clearPaidSubscriptionRelationship(orgId);
+          await prisma.organization.update({
+            where: { id: orgId },
+            data: { plan }
+          });
+          return {
+            note: "Plan set to FREE. Cleared paid/Enterprise subscription leftovers."
+          };
+        }
+
         await prisma.organization.update({
           where: { id: orgId },
           data: { plan }
@@ -1151,7 +1176,28 @@ export async function grantFreshTrialAction(
             trialReminderDay60SentAt: null,
             trialReminderDay80SentAt: null,
             trialReminderDay89SentAt: null,
-            suspendedAt: null
+            /** Drop Enterprise/PRO leftovers so Billing does not show "Won't renew". */
+            cancelAtPeriodEnd: false,
+            currentPeriodStart: null,
+            currentPeriodEnd: null,
+            paystackSubscriptionCode: null,
+            paystackPlanCode: null,
+            paystackStatus: null,
+            emailToken: null,
+            authorizationCode: null,
+            cardLast4: null,
+            cardExpMonth: null,
+            cardExpYear: null,
+            cardExpiringNotifiedAt: null,
+            pastDueSince: null,
+            dunningAttempt: 0,
+            lastDunningAttemptAt: null,
+            nextDunningAt: null,
+            dunningPausedAt: null,
+            suspendedAt: null,
+            compPlan: null,
+            compEndsAt: null,
+            ...clearEnterpriseCoverageTrackingData
           }
         });
         await prisma.organization.update({

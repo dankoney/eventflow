@@ -1,6 +1,9 @@
 import { jsPDF } from "jspdf";
 
-import { getEventflowLogoPngBase64 } from "@/lib/brand/eventflowLogo";
+import {
+  eventflowLogoPdfSizeForHeight,
+  getEventflowLogoPngBase64
+} from "@/lib/brand/eventflowLogo";
 import type { BillingReceiptData } from "@/lib/billing/receiptData";
 
 type Rgb = [number, number, number];
@@ -62,9 +65,18 @@ export function buildBillingReceiptPdf(receipt: BillingReceiptData): Uint8Array 
   let y = MARGIN;
 
   const logo = getEventflowLogoPngBase64();
+  /** Fixed height (pt); width from PNG aspect — never a forced wide box (was 110×26). */
+  const logoBox = eventflowLogoPdfSizeForHeight(42);
   if (logo) {
     try {
-      doc.addImage(`data:image/png;base64,${logo}`, "PNG", MARGIN, y, 110, 26);
+      doc.addImage(
+        `data:image/png;base64,${logo}`,
+        "PNG",
+        MARGIN,
+        y,
+        logoBox.widthPt,
+        logoBox.heightPt
+      );
     } catch {
       setText(doc, C.ink);
       doc.setFont("helvetica", "bold");

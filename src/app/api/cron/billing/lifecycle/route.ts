@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { recordBillingCronOk } from "@/lib/billing/cronHeartbeat";
 import { runBillingLifecycleCron } from "@/lib/billing/runBillingLifecycleCron";
 import { runBillingTrialReminderCron } from "@/lib/billing/runBillingTrialReminderCron";
 import { runEnterpriseCoverageReminderCron } from "@/lib/billing/runEnterpriseCoverageReminderCron";
@@ -27,6 +28,7 @@ export async function GET(request: Request) {
   const lifecycle = await runBillingLifecycleCron();
   const reminders = await runBillingTrialReminderCron();
   const enterpriseCoverageReminders = await runEnterpriseCoverageReminderCron();
+  await recordBillingCronOk("lifecycle");
   return NextResponse.json({
     ok: true,
     ...lifecycle,

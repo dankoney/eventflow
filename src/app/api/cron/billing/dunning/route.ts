@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { recordBillingCronOk } from "@/lib/billing/cronHeartbeat";
 import { runBillingDunningCron } from "@/lib/billing/runBillingDunningCron";
 
 export const maxDuration = 300;
@@ -22,5 +23,6 @@ export async function GET(request: Request) {
   }
 
   const result = await runBillingDunningCron();
+  await recordBillingCronOk("dunning");
   return NextResponse.json({ ok: true, ...result });
 }

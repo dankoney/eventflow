@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { checkBillingCronHealthAndAlert } from "@/lib/billing/cronHeartbeat";
 import { prisma } from "@/lib/prisma";
 import { runDueRemindersForOrg } from "@/lib/reminders/dispatch";
 
@@ -20,5 +21,19 @@ export async function GET(request: Request) {
     scanned += r.eventsScanned;
   }
 
-  return NextResponse.json({ ok: true, orgs: orgs.length, eventsScanned: scanned });
+  /** Watchdog: alert if billing lifecycle/dunning haven't run in >25h. */
+  let billingCronHealth: Awaited<ReturnType<typeof checkBillingCronHealthAndAlert>> | null =
+    null;
+  try {
+    billingCronHealth = await checkBillingCronHealthAndAlert();
+  } catch (error) {
+    console.error("[cron/reminders] billing cron health check failed", error);
+  }
+
+  return NextResponse.json({
+    ok: true,
+    orgs: orgs.length,
+    eventsScanned: scanned,
+    billingCronHealth
+  });
 }

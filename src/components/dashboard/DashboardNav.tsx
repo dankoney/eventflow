@@ -60,7 +60,6 @@ const items = (role: Role, isPlatformOwner: boolean, enabledModules: EnabledModu
   base.push({ href: "/dashboard/settings", label: "Settings", icon: Settings });
   if (isPlatformOwner) {
     base.push({ href: "/superadmin", label: "Platform", icon: Network });
-    base.push({ href: "/superadmin/settings", label: "Alert settings", icon: Settings });
   }
   return base;
 };

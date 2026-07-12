@@ -375,13 +375,23 @@ export async function initiateRenewCheckoutAction(input: {
 /**
  * Authorization-first PRO subscribe / trial conversion (checkout redirect).
  */
-export async function initiateSubscribeAction(): Promise<InitiateSubscribeResult> {
+export async function initiateSubscribeAction(input?: {
+  interval?: BillingPlanInterval;
+}): Promise<InitiateSubscribeResult> {
   const guard = await requireOrgAdmin();
   if (!guard.ok) return { success: false, error: guard.error };
 
-  const planCode = process.env.PAYSTACK_PRO_PLAN_CODE?.trim();
+  const interval: BillingPlanInterval =
+    input?.interval === "yearly" ? "yearly" : "monthly";
+  const planCode = getPaystackPlanCodeForInterval(interval);
   if (!planCode) {
-    return { success: false, error: "Billing is not configured yet. Contact support." };
+    return {
+      success: false,
+      error:
+        interval === "yearly"
+          ? "Yearly plan is not configured (PAYSTACK_PRO_YEARLY_PLAN_CODE)."
+          : "Monthly plan is not configured (PAYSTACK_PRO_PLAN_CODE)."
+    };
   }
 
   const access = await getOrgBillingAccess(guard.orgId);
@@ -426,9 +436,11 @@ export async function initiateSubscribeAction(): Promise<InitiateSubscribeResult
   }
 
   let planAmount: number;
+  let planInterval: string;
   try {
     const plan = await fetchPaystackPlan(planCode);
     planAmount = plan.amount;
+    planInterval = plan.interval;
   } catch (error) {
     const message = error instanceof PaystackApiError ? error.message : "Unable to load plan pricing.";
     return { success: false, error: message };
@@ -471,16 +483,23 @@ export async function initiateSubscribeAction(): Promise<InitiateSubscribeResult
   const reference = newPaystackReference("ef");
 
   try {
+    /**
+     * No `plan` on initialize — same as renew: full checkout (card / MoMo /
+     * bank / USSD). Webhook activates PRO and schedules the Paystack
+     * subscription from metadata.planCode.
+     */
     const initialized = await initializePaystackTransaction({
       email: guard.email,
       amountPesewas: planAmount,
-      planCode,
       reference,
       callbackUrl: base ? `${base}/billing/callback` : undefined,
       metadata: {
         orgId: org.id,
         customer_code: customerCode,
-        purpose: "subscribe"
+        purpose: "subscribe",
+        planCode,
+        planInterval,
+        billingInterval: interval
       }
     });
 
