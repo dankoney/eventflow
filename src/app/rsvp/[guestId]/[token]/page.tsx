@@ -1,5 +1,5 @@
 import { notFound } from "next/navigation";
-import { AttendMode, EventStatus, GuestStatus } from "@prisma/client";
+import { AttendMode, EventBlueprintTemplate, EventStatus, GuestStatus } from "@prisma/client";
 
 import { formatMarketingConsentLabel, shouldShowMarketingOptIn } from "@/lib/email/marketingOptIn";
 import { prisma } from "@/lib/prisma";
@@ -84,6 +84,7 @@ export default async function RsvpAcceptPage({ params, searchParams }: PageProps
       zoomJoinUrl: event.zoomJoinUrl,
       zoomMeetingId: event.zoomMeetingId
     });
+  const offersAccommodation = event.blueprintTemplate === EventBlueprintTemplate.CONFERENCE;
   const eventIsLive = event.status === EventStatus.LIVE;
   // Phase 3 — show the single big "Confirm my presence" card instead of the full
   // RSVP form when this guest already picked in-person and the event is now LIVE.
@@ -102,7 +103,10 @@ export default async function RsvpAcceptPage({ params, searchParams }: PageProps
     blueprint: event.blueprintTemplate,
     firstName: firstNameOf(guest.name),
     alreadyConfirmed: Boolean(guest.rsvpConfirmedAt),
-    eventIsLive
+    eventIsLive,
+    allowsInPerson,
+    allowsVirtual,
+    offersAccommodation
   });
 
   const marketingOrg = {
