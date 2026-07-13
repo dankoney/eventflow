@@ -73,7 +73,7 @@ export default async function OrgCommandCenterPage({ params }: PageProps) {
               </div>
             )}
             <div className="min-w-0">
-              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-amber-300/90">Command Center</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-amber-300/90">Programs</p>
               <h1 className="mt-1 truncate text-2xl font-bold tracking-tight text-white">{org.name}</h1>
               <p className="mt-1 text-sm text-slate-400">Active and live programs you can join right now.</p>
             </div>
@@ -117,7 +117,7 @@ export default async function OrgCommandCenterPage({ params }: PageProps) {
                           </span>
                         ) : (
                           <span className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
-                            Invite / CRM only
+                            Invitation only
                           </span>
                         )}
                       </div>

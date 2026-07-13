@@ -84,7 +84,7 @@ export function renderRegistrationVirtualEmailHtml(p: RegistrationVirtualEmailPa
   const joinPageCard = p.joinPageUrl
     ? renderEmailCard({
         eyebrow: "Bookmark your join page",
-        bodyHtml: `<p style="margin:10px 0 0;color:#3f3f46;font-size:13px;line-height:1.55;font-family:'Inter',Helvetica,Arial,sans-serif"><a href="${escapeAttr(p.joinPageUrl)}" style="color:${escapeAttr(accent)};font-weight:600;text-decoration:none">${escapeHtml(p.joinPageUrl)}</a></p><p style="margin:8px 0 0;color:#52525b;font-size:12px;line-height:1.55;font-family:'Inter',Helvetica,Arial,sans-serif">${p.zoomLinkTracksAttendance ? "Opening the Join Zoom link above records your attendance in Eventflow, then sends you to your personal Zoom session." : "Attendance in Eventflow is recorded when you use your join page and tap confirm — use the same email link if your app opens Zoom directly."}</p>`
+        bodyHtml: `<p style="margin:10px 0 0;color:#3f3f46;font-size:13px;line-height:1.55;font-family:'Inter',Helvetica,Arial,sans-serif"><a href="${escapeAttr(p.joinPageUrl)}" style="color:${escapeAttr(accent)};font-weight:600;text-decoration:none">${escapeHtml(p.joinPageUrl)}</a></p><p style="margin:8px 0 0;color:#52525b;font-size:12px;line-height:1.55;font-family:'Inter',Helvetica,Arial,sans-serif">${p.zoomLinkTracksAttendance ? "Opening the link above records your attendance, then takes you to Zoom." : "Open your join page and confirm so we can record that you joined."}</p>`
       })
     : "";
 

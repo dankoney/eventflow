@@ -232,7 +232,7 @@ export function VirtualJoinPanel({
           </a>
           <p className="mt-2 text-xs text-slate-500">
             {zoomJoinTracksAttendance
-              ? "Records your attendance in Eventflow, then opens Zoom in a new tab."
+              ? "Records your attendance for this event, then opens Zoom in a new tab."
               : "Opens Zoom in a new tab."}
           </p>
         </div>
@@ -265,7 +265,7 @@ export function VirtualJoinPanel({
           <p className="text-sm text-slate-600">
             {zoomJoinTracksAttendance
               ? "Prefer to confirm without leaving this tab? Use the button below after you have joined in Zoom."
-              : "After you have opened Zoom, confirm here so the host sees you in Eventflow analytics."}
+              : "After you have opened Zoom, confirm here so the host can see that you joined."}
           </p>
           <Button type="button" className="mt-3" disabled={pending} onClick={onConfirmJoined}>
             {pending ? "Saving…" : confirmJoinedLabel}

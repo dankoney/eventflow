@@ -129,7 +129,7 @@ export function FlashEventEnterClient({
           href={`/o/${encodeURIComponent(orgSlug)}`}
           className="text-sm font-medium text-slate-600 underline-offset-2 hover:text-slate-900 hover:underline"
         >
-          ← Back to Command Center
+          ← Back to programs
         </Link>
         <h1 className="mt-4 text-2xl font-bold tracking-tight text-slate-900">Join this event</h1>
         <p className="mt-2 text-sm text-slate-600">
@@ -222,11 +222,11 @@ export function FlashEventEnterClient({
           </Button>
           {allowFlashEntry ? (
             <p className="text-xs text-slate-500">
-              If you are not in the CRM yet, Continue will ask for a few details to register you as a walk-in (when
-              allowed for this event).
+              If we don't already have you on the guest list, Continue will ask for a few details to register you as a
+              walk-in (when allowed for this event).
             </p>
           ) : (
-            <p className="text-xs text-slate-500">Walk-ins are turned off — your email must match the guest list or CRM.</p>
+            <p className="text-xs text-slate-500">Walk-ins are turned off — your email must match the guest list.</p>
           )}
         </form>
       ) : (

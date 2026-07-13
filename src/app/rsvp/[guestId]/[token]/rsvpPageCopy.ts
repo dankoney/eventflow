@@ -87,7 +87,7 @@ export function rsvpAcceptSuccessCopy(input: SuccessInput): Success {
       title: "You're checked in.",
       body: input.emailDelivered
         ? "We just emailed your attendance badge with the check-in QR. Keep it handy — staff may scan it again during the event."
-        : "Your check-in is recorded, but we couldn't send the attendance receipt right now. Your organizer can resend it from the dashboard."
+        : "Your check-in is recorded, but we couldn't send the attendance receipt right now. Ask the event organizer to resend it if you need another copy."
     };
   }
 
@@ -97,21 +97,21 @@ export function rsvpAcceptSuccessCopy(input: SuccessInput): Success {
         title: "You're on the roster.",
         body: input.emailDelivered
           ? "We emailed you a staff confirmation with your check-in QR and a calendar invite. Bring the QR (or use your personal link) at the session."
-          : "Your registration is saved on the roster. We couldn't email the confirmation right now — your organizer can resend it from the dashboard."
+          : "Your registration is saved on the roster. We couldn't email the confirmation right now — ask the event organizer to resend it."
       };
     case EventBlueprintTemplate.CONFERENCE:
       return {
         title: "You're in.",
         body: input.emailDelivered
           ? "We just sent your program pass — QR badge, Zoom backup, calendar invite, and directions if applicable."
-          : "Your seat is locked in. We couldn't send the program pass email right now — your organizer can resend it from the dashboard."
+          : "Your seat is locked in. We couldn't send the program pass email right now — ask the event organizer to resend it."
       };
     case EventBlueprintTemplate.TRAINING_WORKSHOP:
       return {
         title: "Workshop confirmed.",
         body: input.emailDelivered
           ? "We emailed your workshop confirmation with check-in QR, Zoom link, and a calendar invite."
-          : "Your seat is saved. We couldn't send the workshop confirmation right now — your organizer can resend it from the dashboard."
+          : "Your seat is saved. We couldn't send the workshop confirmation right now — ask the event organizer to resend it."
       };
     case EventBlueprintTemplate.BLANK:
     default:
@@ -119,7 +119,7 @@ export function rsvpAcceptSuccessCopy(input: SuccessInput): Success {
         title: "You're confirmed.",
         body: input.emailDelivered
           ? "We just emailed your confirmation with a check-in QR, the Zoom link, and a calendar invite. Save them for the day."
-          : "Your RSVP is saved, but we couldn't send the confirmation email right now. Your organizer can resend it from the dashboard."
+          : "Your RSVP is saved, but we couldn't send the confirmation email right now. Ask the event organizer to resend it."
       };
   }
 }

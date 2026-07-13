@@ -235,7 +235,7 @@ export function GuestRegistrationPassPanel({
             </a>
             <p className="mt-2 text-xs text-slate-500">
               {zoomJoinTracksAttendance
-                ? "Records your attendance in Eventflow, then opens Zoom in a new tab."
+                ? "Records your attendance for this event, then opens Zoom in a new tab."
                 : "Opens Zoom in a new tab."}
             </p>
           </PassCard>
