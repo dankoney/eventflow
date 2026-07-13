@@ -362,7 +362,7 @@ export function RsvpAcceptForm({
             : alreadyConfirmed
               ? "Update RSVP"
               : isInternalStaff
-                ? "Register me on the roster"
+                ? "Confirm my registration"
                 : "Confirm RSVP"}
       </button>
     </form>
