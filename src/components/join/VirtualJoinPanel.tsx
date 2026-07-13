@@ -171,7 +171,7 @@ export function VirtualJoinPanel({
           className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900"
           role="status"
         >
-          Invitation accepted — you are on the roster. Join below when the session starts (virtual attendance is
+          Invitation accepted — you are confirmed. Join below when the session starts (virtual attendance is
           recorded when you use Join Zoom or confirm below).
         </div>
       ) : null}

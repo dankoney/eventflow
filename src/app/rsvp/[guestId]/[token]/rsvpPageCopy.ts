@@ -73,12 +73,8 @@ export function rsvpPageHero(input: HeroInput): Hero {
   }
 
   if (input.alreadyConfirmed) {
-    const roster =
-      input.blueprint === EventBlueprintTemplate.INTERNAL_STAFF
-        ? `You're on the roster, ${name}.`
-        : `You're confirmed, ${name}.`;
     return {
-      title: roster,
+      title: `You're confirmed, ${name}.`,
       subtitle: `Need a change? Update ${updateDetailsList(input)} below. We'll only re-send your confirmation if something changes.`
     };
   }
@@ -100,10 +96,10 @@ export function rsvpPageHero(input: HeroInput): Hero {
     }
     case EventBlueprintTemplate.INTERNAL_STAFF:
       return {
-        title: `Quick roster check, ${name}.`,
+        title: `Confirm your registration, ${name}.`,
         subtitle: hybrid
-          ? "Confirm your details and how you'll join so we can mark you on the roster. Check-in still happens at the session with your QR or personal link."
-          : "Confirm your details so we can mark you on the roster. Check-in still happens at the session with your QR or personal link."
+          ? "Confirm your details and how you'll join so we can mark you as attending. Check-in still happens at the session with your QR or personal link."
+          : "Confirm your details so we can mark you as attending. Check-in still happens at the session with your QR or personal link."
       };
     case EventBlueprintTemplate.TRAINING_WORKSHOP:
       return {
@@ -154,10 +150,10 @@ export function rsvpAcceptSuccessCopy(input: SuccessInput): Success {
   switch (input.blueprint) {
     case EventBlueprintTemplate.INTERNAL_STAFF:
       return {
-        title: "You're on the roster.",
+        title: "You're confirmed.",
         body: input.emailDelivered
           ? "We emailed you a staff confirmation with your check-in QR and a calendar invite. Bring the QR (or use your personal link) at the session."
-          : "Your registration is saved on the roster. We couldn't email the confirmation right now — ask the event organizer to resend it."
+          : "Your registration is saved. We couldn't email the confirmation right now — ask the event organizer to resend it."
       };
     case EventBlueprintTemplate.CONFERENCE:
       return {
